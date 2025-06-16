@@ -20,14 +20,32 @@ urlpatterns: list = [
         views.InitiatePaymentView.as_view(),
         name='initiate-payment'
     ),
+    re_path(
+        r'^payment/v1/error/(.+)/$',
+        views.PaymentErrorView.as_view(),
+        name='payment-error'
+    ),
+    re_path(
+        r'^payment/v1/sucess/(.+)/$',
+        views.PaymentSuccessView.as_view(),
+        name='payment-success'
+    ),
 
-    # api urls
     re_path(r'^api/cart/v1/cart/$', views.CartView.as_view(), name='cart-add'),
 
-    # provider urls
+    re_path(
+        r'^payment/v1/payfort/return/$',
+        payfort_views.PayFortReturnView.as_view(),
+        name='payfort-return'
+    ),
     re_path(
         r'^payment/v1/payfort/feedback/$',
         payfort_views.PayfortFeedbackView.as_view(),
         name='payfort-feedback'
+    ),
+    re_path(
+        r'^payment/v1/payfort/status/$',
+        payfort_views.PayFortStatusView.as_view(),
+        name='payfort-status'
     ),
 ]

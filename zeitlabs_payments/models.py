@@ -51,7 +51,7 @@ class AuditLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     @classmethod
-    def audit_log_cart_status_updated(cls, user, old_status, new_status):
+    def audit_log_cart_status_updated(cls, user, id, old_status, new_status):
         cls.objects.create(
             user=user,
             action='CartStatusUpdated',

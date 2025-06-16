@@ -8,6 +8,7 @@ from django.http import HttpResponseBadRequest
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
+from django.shortcuts import render
 from django.views.generic import TemplateView
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -229,3 +230,27 @@ class CartView(APIView):
         serializer = CartSerializer(cart, context={'request': request})
         logger.info(f'Cart created for user {request.user} with SKU {sku_code}')
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class PaymentErrorView(TemplateView):
+    """Render the template that shows the error message to the user when the payment handling is failed."""
+    template_name = "zeitlabs_payments/payment_error.html"
+
+    def get(self, request, *args, **kwargs):
+        """Handles the GET request."""
+        context = {
+            "merchant_reference": args[0],
+        }
+        return render(request, self.template_name, context)
+
+
+class PaymentSuccessView(TemplateView):
+    """Render the template that shows the error message to the user when the payment handling is failed."""
+    template_name = "zeitlabs_payments/payment_successful.html"
+
+    def get(self, request, *args, **kwargs):
+        """Handles the GET request."""
+        context = {
+            "merchant_reference": args[0],
+        }
+        return render(request, self.template_name, context)

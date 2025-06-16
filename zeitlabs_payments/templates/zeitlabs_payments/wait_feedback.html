@@ -1,0 +1,63 @@
+{% extends "main_django.html" %}
+{% load i18n %}
+
+{% block body %}
+  <style>
+    .centered-content {
+      text-align: center;
+      margin-top: 2em;
+    }
+  </style>
+  <div class="centered-content">
+    <h1 id="status-message">{% trans "Processing enrollment... please wait..." %}</h1>
+    <p>
+      {% trans "For your reference, the payment ID is:" %}
+      <strong>{{ ecommerce_transaction_id }}</strong>
+    </p>
+  </div>
+
+  <script type="text/javascript">
+    const errorUrl = "{{ ecommerce_error_url|safe }}";
+    const successUrl = "{{ ecommerce_success_url|safe }}";
+    const statusUrl = "{{ ecommerce_status_url|safe }}";
+    const statusMessage = document.getElementById("status-message");
+    let attempts = 0;
+
+    function checkStatus() {
+      attempts++;
+      const urlencoded = new URLSearchParams();
+      urlencoded.append("transaction_id", "{{ ecommerce_transaction_id }}");
+      urlencoded.append("merchant_reference", "{{ merchant_reference }}");
+
+      fetch(statusUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: urlencoded,
+        redirect: "follow"
+      })
+      .then(response => {
+        debugger
+        if (response.status === 200) {
+          // Show success message
+          window.location.href = successUrl;
+        } else if (response.status === 204) {
+          if (attempts < {{ ecommerce_max_attempts }}) {
+            setTimeout(checkStatus, {{ ecommerce_wait_time }});
+          } else {
+            window.location.href = errorUrl;
+          }
+        } else {
+          window.location.href = errorUrl;
+        }
+      })
+      .catch(error => {
+        console.error("Payment Check Status Error: ", error);
+        window.location.href = errorUrl;
+      });
+    }
+
+    window.onload = checkStatus;
+  </script>
+{% endblock %}
