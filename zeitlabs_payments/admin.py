@@ -1,7 +1,7 @@
 """Django admin view for the models."""
 from django.contrib import admin
 
-from .models import Cart, CartItem, CatalogueItem, Transaction, WebhookEvent
+from .models import Cart, CartItem, CatalogueItem, Transaction, WebhookEvent, AuditLog
 
 
 @admin.register(Cart)
@@ -80,3 +80,20 @@ class WebhookEventAdmin(admin.ModelAdmin):
     search_fields = ('id', 'gateway', 'event_type', 'related_transaction__gateway_transaction_id')
     readonly_fields = ('id', 'created_at')
     raw_id_fields = ('related_transaction',)
+
+
+@admin.register(AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+    """
+    Admin for AuditLog model.
+    """
+
+    list_display = ('id', 'user', 'action', 'gateway', 'created_at', 'details')
+    list_filter = ('action', 'gateway', 'created_at')
+    search_fields = ('user__username', 'user__email', 'action', 'details', 'gateway')
+    readonly_fields = ('user', 'action', 'gateway', 'details', 'created_at')
+    ordering = ('-created_at',)
+
+    def has_add_permission(self, request):
+        """Disallow adding logs manually"""
+        return False

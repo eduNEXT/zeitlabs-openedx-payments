@@ -116,33 +116,49 @@ class PayfortFeedbackView(PayFortBaseView):
     def post(self, request: Any) -> None:
         """Handle the POST request from PayFort for payment status or feedback."""
         data = request.POST
-        self.record_audit_log(action='ReceivedPayfortNotification', details=data)
+        self.record_audit_log(action='ReceivedPayfortFeedback', details=data)
         if data.get('status') == SUCCESS_STATUS:
             verify_response_format(data)
             if self.cart.status != Cart.Status.PROCESSING:
-                raise PayFortException(
-                    f'Cart with id: {self.cart.id} is not in {Cart.Status.PROCESSING}'
-                    f' state. State found: {self.cart.status}'
-                )
+                self.record_audit_log(
+                    action='SuccessResponseForInvalidCart',
+                    details=(
+                        f'Inavlid cart state found during success feedback processing. Cart: {self.cart.id}'
+                        f'is in state: {self.cart.status} isntead of {Cart.Status.PROCESSING}.'
+                    ),
+                    user=self.cart.user)
+                return HttpResponse(status=200)
             self.record_audit_log(
-                action='SuccessPayfortResponse',
+                action='SuccessResponse',
                 details=f'Success response is receieved for cart: {self.cart.id} and site: {self.site.id}.',
                 user=self.cart.user
             )
-            with transaction.atomic():
-                logger.info('Starting transaction record creation for PayFort callback.')
-                self.payment_processor.handle_payment(
-                    cart=self.cart,
-                    user=request.user if request.user.is_authenticated else None,
-                    transaction_status=data.get('response_message', 'unknown'),
-                    transaction_id=data.get('fort_id'),
-                    method=data.get('payment_option', 'N/A'),
-                    amount=data.get('amount', '0'),
-                    currency=data.get('currency', 'N/A'),
-                    reason=data.get('acquirer_response_message', 'N/A'),
-                    response=data
-                )
+            try:
+                with transaction.atomic():
+                    logger.info('Starting transaction record creation for PayFort callback.')
+                    self.payment_processor.handle_payment(
+                        cart=self.cart,
+                        user=request.user if request.user.is_authenticated else None,
+                        transaction_status=data['response_message'],
+                        transaction_id=data['fort_id'],
+                        method=data['payment_option'],
+                        amount=data['amount'],
+                        currency=data['currency'],
+                        reason=data['acquirer_response_message'],
+                        response=data
+                    )
                 self.payment_processor.fulfill_cart(self.cart)
+                logger.info(f"Transaction for cart {self.cart.id} and fullfillment handled successfully.")
+            except Exception as e:
+                self.record_audit_log(
+                    action='TransactionRolledBack',
+                    details=(
+                        f'Transaction: {data.get("fort_id")} for cart: {self.cart.id} and site: '
+                        f'{self.site.id} rolled back.'
+                    ),
+                    user=self.cart.user
+                )
+                logger.error(f"Transaction failed and was rolled back: {str(e)}")
         else:
             logger.warning(f'PayFort payment is not successful. Status: {data.get("status")}, Data: {data}')
         return HttpResponse(status=200)

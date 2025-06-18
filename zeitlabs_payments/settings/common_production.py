@@ -14,4 +14,4 @@ def plugin_settings(settings: Any) -> None:
         'sha_method': 'SHA-256',
         'redirect_url': 'https://sbcheckout.payfort.com/FortAPI/paymentPage'
     }
-    settings.ECOMMERCE_BASE_URL = 'https://339a-2406-5a00-a20d-cc00-3b73-fafc-dacf-8cd6.ngrok-free.app'
+    settings.ECOMMERCE_BASE_URL = 'https://eec3-2406-5a00-a20d-cc00-2f45-25bc-2b70-f8ce.ngrok-free.app'

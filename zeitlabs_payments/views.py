@@ -157,10 +157,11 @@ class CartView(APIView):
 
         cart = models.Cart.objects.create(user=user, status=models.Cart.Status.PENDING)
         logger.info(f'Created new pending cart {cart.id} for user {user}')
-        models.AuditLog.objects.create(
-            user=user,
-            action='CreatedCart',
-            details=f'Cart with id: {cart.id} is created.'
+        models.AuditLog.audit_log_cart_status_updated(
+            user,
+            cart.id,
+            None,
+            models.Cart.Status.PENDING,
         )
         models.CartItem.objects.create(
             cart=cart,
