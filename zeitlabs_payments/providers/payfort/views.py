@@ -15,8 +15,8 @@ from django.views.decorators.csrf import csrf_exempt
 
 from zeitlabs_payments.exceptions import InavlidCartError, GatewayError
 from zeitlabs_payments.models import Cart, AuditLog, Transaction
-from zeitlabs_payments.providers.payfort.exceptions import PayFortException
-from zeitlabs_payments.providers.payfort.helpers import SUCCESS_STATUS, verify_response_format
+from zeitlabs_payments.providers.payfort.exceptions import PayFortException, PayFortBadSignatureException
+from zeitlabs_payments.providers.payfort.helpers import SUCCESS_STATUS, verify_response_format, verify_signature
 from zeitlabs_payments.providers.payfort.processor import PayFort
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,17 @@ class PayFortReturnView(PayFortBaseView):
     def post(self, request):
         """Handle the POST request from PayFort after processing payment page."""
         data = request.POST.dict()
+        try:
+            verify_signature(
+                self.payment_processor.response_sha_phrase,
+                self.payment_processor.sha_method,
+                data,
+            )
+        except PayFortBadSignatureException:
+            self.record_audit_log(action='BadResponseSignature', details=data)
+            logger.error("Invalid signature received in response from payfort.")
+            return render(request, 'zeitlabs_payments/payment_error.html')
+
         if data.get('status') == SUCCESS_STATUS:
             try:
                 verify_response_format(data)
@@ -115,8 +126,19 @@ class PayfortFeedbackView(PayFortBaseView):
 
     def post(self, request: Any) -> None:
         """Handle the POST request from PayFort for payment status or feedback."""
-        data = request.POST
+        data = request.POST.dict()
         self.record_audit_log(action='ReceivedPayfortFeedback', details=data)
+        try:
+            verify_signature(
+                self.payment_processor.response_sha_phrase,
+                self.payment_processor.sha_method,
+                data,
+            )
+        except PayFortBadSignatureException:
+            logger.error("Invalid signature received in response from payfort.")
+            self.record_audit_log(action='BadResponseSignature', details=data)
+            raise
+
         if data.get('status') == SUCCESS_STATUS:
             verify_response_format(data)
             if self.cart.status != Cart.Status.PROCESSING:
