@@ -15,6 +15,8 @@ from django.utils.translation import gettext_lazy as _
 from zeitlabs_payments.exceptions import CartFulfillmentError, GatewayError, InavlidCartError
 from zeitlabs_payments.helpers import get_currency, get_language, get_merchant_reference, get_order_description
 from zeitlabs_payments.models import Cart, CatalogueItem, Transaction, WebhookEvent, AuditLog
+from zeitlabs_payments.fulfillment import FULFILLMENT_HANDLERS
+
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +145,18 @@ class BaseProcessor:
         :return: Site instance if found.
         :raises GatewayError: If the site does not exist or the ID is invalid.
         """
+        if Transaction.objects.filter(gateway_transaction_id=transaction_id).exists():
+            logger.warning(f'Duplicate transaction detected while cart: {cart.id} processing.')
+            AuditLog.log(
+                action=AuditLog.AuditActions.DUPLICATE_TRANSACTION,
+                cart=cart,
+                gateway=self.SLUG,
+                context={
+                    'transaction_id': transaction_id,
+                    'cart_status': cart.status
+                }
+            )
+            return
         transaction_record = Transaction.objects.create(
             cart=cart,
             type=Transaction.TransactionType.PAYMENT,
@@ -168,93 +182,42 @@ class BaseProcessor:
 
         cart.status = Cart.Status.PAID
         cart.save(update_fields=['status'])
-        AuditLog.audit_log_cart_status_updated(
-            cart.user,
-            cart.id,
-            Cart.Status.PROCESSING,
-            Cart.Status.PAID,
+        AuditLog.log(
+            action=AuditLog.AuditActions.CART_STATUS_UPDATED,
+            cart=cart,
+            context={
+                'old_status': Cart.Status.PROCESSING,
+                'new_status': Cart.Status.PAID,
+            }
         )
         logger.info(f'Cart marked as PAID: {cart.id}')
 
     def fulfill_cart(self, cart: Cart) -> None:
         """
-        Fulfill the cart by processing each item.
+        Fulfill the cart by processing each item using registered handlers.
 
-        If the item is a paid course, enroll the user in the course.
-        Raises CartFulfillmentError if any issue occurs during processing.
-
-        :param cart: Cart instance containing items to process
-        :raises CartFulfillmentError: If any error occurs while fulfilling the cart
+        :param cart: Cart instance containing items to process.
+        :raises CartFulfillmentError: If any error occurs during fulfillment or if no handler is found.
+        :return: None
         """
         for item in cart.items.all():
-            logger.debug(f'Processing item {item.id} in cart.')
+            logger.debug(f'Processing item {item.id} of type {item.catalogue_item.type} in cart {cart.id}.')
+            handler = FULFILLMENT_HANDLERS.get(item.catalogue_item.type)
 
-            if item.catalogue_item.type != CatalogueItem.ItemType.PAID_COURSE:
+            if not handler:
                 logger.error(
-                    f'Unsupported catalogue item type: {item.catalogue_item.type} '
+                    f'No fulfillment handler registered for item type: {item.catalogue_item.type} '
                     f'for item {item.catalogue_item.id} in cart {cart.id}'
                 )
-                AuditLog.objects.create(
-                    user=cart.user,
-                    action='CartFulfillmentError',
-                    gateway=self.SLUG,
-                    details=(
-                        f'Error during cart: {cart.id} fullfilment for item: {item.id}, catalogue_item:'
-                        f' {item.catalogue_item.id} due to unsupported type: {item.catalogue_item.type}.'
-                    )
+                AuditLog.log(
+                    action=AuditLog.AuditActions.CART_FULFILLMENT_ERROR,
+                    cart=cart,
+                    context={
+                        'item_id': item.id,
+                        'catalogue_item_id': item.catalogue_item.id,
+                        'sku': item.catalogue_item.sku,
+                    }
                 )
                 raise CartFulfillmentError(f'Unsupported catalogue item type: {item.catalogue_item.type}')
 
-            try:
-                course_mode = CourseMode.objects.get(sku=item.catalogue_item.sku)
-            except CourseMode.DoesNotExist as exc:
-                logger.error(
-                    f'CourseMode not found for SKU: {item.catalogue_item.sku} - Item ID: {item.id}'
-                )
-                AuditLog.objects.create(
-                    user=cart.user,
-                    action='CartFulfillmentError',
-                    gateway=self.SLUG,
-                    details=(
-                        f'Error during cart: {cart.id} fullfilment for item: {item.id}, catalogue_item:'
-                        f' {item.catalogue_item.id} due to invalid sku: {item.catalogue_item.sku} as'
-                        f'CourseMode does not exist for given sku and catalogue item type: {item.catalogue_item.type}.'
-                    )
-                )
-                raise CartFulfillmentError('CourseMode not found') from exc
-
-            try:
-                CourseEnrollment.enroll(
-                    cart.user,
-                    course_mode.course.id,
-                    mode=course_mode.mode_slug,
-                )
-                AuditLog.objects.create(
-                    user=cart.user,
-                    action='UserEnrolled',
-                    gateway=self.SLUG,
-                    details=(
-                        f'User enrolled to the course: {course_mode.course.id} with mode: {course_mode.mode_slug} '
-                        f'during cart: {cart.id} fullfilment for catalogue_item: {item.catalogue_item.id}.'
-                    )
-                )
-                logger.info(
-                    f'User {cart.user.id} enrolled in course {course_mode.course.id} '
-                    f'with mode {course_mode.mode_slug}'
-                )
-            except Exception as exc:
-                logger.exception(
-                    f'Unexpected error while enrolling user {cart.user.id} in course: '
-                    f'{course_mode.course.id}. Item ID: {item.id}'
-                )
-                AuditLog.objects.create(
-                    user=cart.user,
-                    action='UserEnrolledError',
-                    gateway=self.SLUG,
-                    details=(
-                        f'Unable to complete user enrollment to course: {course_mode.course.id} with mode: '
-                        f'{course_mode.mode_slug} during cart: {cart.id} fullfilment for'
-                        f'catalogue_item: {item.catalogue_item.id}.'
-                    )
-                )
-                raise CartFulfillmentError('Unexpected enrollment error') from exc
+            handler.fulfill(cart, item, self.SLUG)

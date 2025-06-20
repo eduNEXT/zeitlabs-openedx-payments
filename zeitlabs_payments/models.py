@@ -1,6 +1,9 @@
 """Zeitlabs payments models."""
+import re
+from django.core.exceptions import ValidationError
 from django.contrib.auth import get_user_model
 from django.db import models
+
 
 User = get_user_model()
 
@@ -14,7 +17,7 @@ class Transaction(models.Model):
         PAYMENT = 'payment'
         REFUND = 'refund'
 
-    cart = models.ForeignKey('Cart', on_delete=models.CASCADE, related_name='transactions')
+    cart = models.ForeignKey('Cart', on_delete=models.SET_NULL, related_name='transactions', null=True)
     type = models.CharField(max_length=20, choices=TransactionType.choices)
     status = models.CharField(max_length=50)
     gateway = models.CharField(max_length=50)
@@ -44,18 +47,79 @@ class WebhookEvent(models.Model):
 class AuditLog(models.Model):
     """AuditLog model."""
 
-    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    class AuditActions:
+        CART_FULFILLMENT_ERROR = "CartFulfillmentError"
+        USER_ENROLLED = "UserEnrolled"
+        USER_ENROLLED_ERROR = "UserEnrolledError"
+        REDIRECT_TO_PAYMENT = "RedirectToPaymentGateway"
+        DUPLICATE_TRANSACTION = "DuplicateTransactionDetected"
+        BAD_RESPONSE_SIGNATURE = "BadResponseSignature"
+        RECEIVED_RESPONSE = "ReceivedGatewayResponse"
+        RESPONSE_INVALID_CART = "ResponseForInvalidCart"
+        TRANSACTION_ROLLED_BACK = "TransactionRolledBack"
+        CART_STATUS_UPDATED = "CartStatusUpdated"
+        CART_FULFIlED = "CartFulfilled"
+
+    TEMPLATES = {
+        AuditActions.CART_FULFILLMENT_ERROR: (
+            "Error during cart fulfillment for item: {item_id}, "
+            "catalogue_item: {catalogue_item_id} due to invalid SKU: {sku} or unsupported type."
+        ),
+        AuditActions.USER_ENROLLED: (
+            "User enrolled to the course: {course_id} with mode: {mode_slug} "
+            "during cart fulfillment for catalogue_item: {catalogue_item_id}."
+        ),
+        AuditActions.USER_ENROLLED_ERROR: (
+            "Unable to complete user enrollment to course: {course_id} with mode: {mode_slug} "
+            "during cart fulfillment for catalogue_item: {catalogue_item_id}."
+        ),
+        AuditActions.REDIRECT_TO_PAYMENT: "Redirecting to payment page.",
+        AuditActions.DUPLICATE_TRANSACTION: (
+            "Transaction with id: {transaction_id} already existed. Cart has status: {cart_status}."
+        ),
+        AuditActions.BAD_RESPONSE_SIGNATURE: "Bad response signature detected: {data}.",
+        AuditActions.RECEIVED_RESPONSE: "Received response from payment gateway: {data}.",
+        AuditActions.RESPONSE_INVALID_CART: (
+            "Invalid cart state found during success feedback processing. Cart"
+            "is in state: {cart_status} instead of {required_cart_state}."
+        ),
+        AuditActions.TRANSACTION_ROLLED_BACK: (
+            "Transaction: {transaction_id} for cart: {cart_id} and site: {site_id} rolled back."
+        ),
+        AuditActions.CART_STATUS_UPDATED: (
+            "Status updated for cart from: {old_status} to: {new_status}."
+        ),
+        AuditActions.CART_FULFIlED: (
+            "Cart fullfilled successfully."
+        )
+    }
+
     action = models.CharField(max_length=255)
+    cart = models.ForeignKey('Cart', on_delete=models.CASCADE, related_name='audits', null=True)
     gateway = models.CharField(max_length=50, blank=True, null=True)
     details = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     @classmethod
-    def audit_log_cart_status_updated(cls, user, old_status, new_status):
-        cls.objects.create(
-            user=user,
-            action='CartStatusUpdated',
-            details=f'Status updated for Cart with id: {id} from: {old_status} to: {new_status}.'
+    def log(cls, *, action, context=None, cart=None, gateway=None):
+        context = context or {}
+        template = cls.TEMPLATES.get(action, "")
+
+        # Validate required template parameters
+        if template:
+            required_keys = set(re.findall(r'{(\w+)}', template))
+            missing_keys = required_keys - context.keys()
+            if missing_keys:
+                raise ValidationError(
+                    f"Missing template parameters for action '{action}': {', '.join(missing_keys)}"
+                )
+
+        details = template.format(**context) if template else str(context)
+        return cls.objects.create(
+            action=action,
+            cart=cart,
+            gateway=gateway,
+            details=details,
         )
 
 

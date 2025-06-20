@@ -39,7 +39,7 @@ class PayFort(BaseProcessor):
         self.redirect_url = settings.PAYFORT_SETTINGS['redirect_url']
         self.return_url = urljoin(
             configuration_helpers.get_value('LMS_URL', settings.ECOMMERCE_BASE_URL),
-            reverse('zeitlabs_payments:payfort-feedback')
+            reverse('zeitlabs_payments:payfort-return')
         )
 
     @classmethod
@@ -80,12 +80,14 @@ class PayFort(BaseProcessor):
             'return_url': self.return_url
         }
 
-    def generate_signature(self, params: Dict[str, Any]) -> str:
+    def generate_signature(self, params: Dict[str, Any], sha_phrase=None) -> str:
         """
         Generate a signature for the transaction using provided or base parameters.
         """
+        if not sha_phrase:
+            sha_phrase = self.request_sha_phrase
         return get_signature(
-            self.request_sha_phrase,
+            sha_phrase,
             self.sha_method,
             params,
         )

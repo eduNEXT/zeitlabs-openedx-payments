@@ -37,7 +37,7 @@ class PayfortFeedbackTestView(TestCase):
         )
         self.site = Site.objects.create(name='test.com', domain='test.com')
         self.provider = 'payfort'
-        self.url = reverse('zeitlabs_payments:payfort-feedback')
+        self.url = reverse('zeitlabs_payments:payfort-return')
 
         self.valid_response = {
             'amount': '150',
