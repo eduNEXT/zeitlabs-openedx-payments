@@ -88,10 +88,10 @@ class AuditLogAdmin(admin.ModelAdmin):
     Admin for AuditLog model.
     """
 
-    list_display = ('id', 'user', 'action', 'gateway', 'created_at', 'details')
+    list_display = ('id', 'cart', 'action', 'gateway', 'created_at', 'details')
     list_filter = ('action', 'gateway', 'created_at')
-    search_fields = ('user__username', 'user__email', 'action', 'details', 'gateway')
-    readonly_fields = ('user', 'action', 'gateway', 'details', 'created_at')
+    search_fields = ('cart__user__username', 'cart__user__email', 'action', 'details', 'gateway')
+    readonly_fields = ('cart', 'action', 'gateway', 'details', 'created_at')
     ordering = ('-created_at',)
 
     def has_add_permission(self, request):

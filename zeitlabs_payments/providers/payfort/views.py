@@ -57,15 +57,6 @@ class PayFortBaseView(View):
             logger.error(f'Payfort Error! merchant_reference: {reference} is invalid. Unable to extract site.')
             return None
 
-    def record_audit_log(self, action: str, details: str | dict, user: get_user_model = None) -> None:
-        """Record audit log"""
-        AuditLog.objects.create(
-            user=user,
-            action=action,
-            gateway=self.payment_processor.SLUG,
-            details=details
-        )
-
 
 @method_decorator(csrf_exempt, name='dispatch')
 class PayFortReturnView(PayFortBaseView):
@@ -87,7 +78,12 @@ class PayFortReturnView(PayFortBaseView):
                 data,
             )
         except PayFortBadSignatureException:
-            self.record_audit_log(action='BadResponseSignature', details=data)
+            AuditLog.log(
+                action=AuditLog.AuditActions.BAD_RESPONSE_SIGNATURE,
+                cart=self.cart,
+                gateway=self.payment_processor.SLUG,
+                context={'data': data}
+            )
             logger.error("Invalid signature received in response from payfort.")
             return render(request, 'zeitlabs_payments/payment_error.html')
 
@@ -127,7 +123,12 @@ class PayfortFeedbackView(PayFortBaseView):
     def post(self, request: Any) -> None:
         """Handle the POST request from PayFort for payment status or feedback."""
         data = request.POST.dict()
-        self.record_audit_log(action='ReceivedPayfortFeedback', details=data)
+        AuditLog.log(
+            action=AuditLog.AuditActions.RECEIVED_RESPONSE,
+            cart=self.cart,
+            gateway=self.payment_processor.SLUG,
+            context={'data': data}
+        )
         try:
             verify_signature(
                 self.payment_processor.response_sha_phrase,
@@ -136,25 +137,24 @@ class PayfortFeedbackView(PayFortBaseView):
             )
         except PayFortBadSignatureException:
             logger.error("Invalid signature received in response from payfort.")
-            self.record_audit_log(action='BadResponseSignature', details=data)
+            AuditLog.log(
+                action=AuditLog.AuditActions.BAD_RESPONSE_SIGNATURE,
+                cart=self.cart,
+                gateway=self.payment_processor.SLUG,
+                context={'data': data}
+            )
             raise
 
         if data.get('status') == SUCCESS_STATUS:
             verify_response_format(data)
             if self.cart.status != Cart.Status.PROCESSING:
-                self.record_audit_log(
-                    action='SuccessResponseForInvalidCart',
-                    details=(
-                        f'Inavlid cart state found during success feedback processing. Cart: {self.cart.id}'
-                        f'is in state: {self.cart.status} isntead of {Cart.Status.PROCESSING}.'
-                    ),
-                    user=self.cart.user)
+                AuditLog.log(
+                    action=AuditLog.AuditActions.RESPONSE_INVALID_CART,
+                    cart=self.cart,
+                    gateway=self.payment_processor.SLUG,
+                    context={'cart_status': self.cart.status, 'required_cart_state': Cart.Status.PROCESSING}
+                )
                 return HttpResponse(status=200)
-            self.record_audit_log(
-                action='SuccessResponse',
-                details=f'Success response is receieved for cart: {self.cart.id} and site: {self.site.id}.',
-                user=self.cart.user
-            )
             try:
                 with transaction.atomic():
                     logger.info('Starting transaction record creation for PayFort callback.')
@@ -170,15 +170,23 @@ class PayfortFeedbackView(PayFortBaseView):
                         response=data
                     )
                 self.payment_processor.fulfill_cart(self.cart)
+                AuditLog.log(
+                    action=AuditLog.AuditActions.CART_FULFIlED,
+                    cart=self.cart,
+                    gateway=self.payment_processor.SLUG,
+                    context={}
+                )
                 logger.info(f"Transaction for cart {self.cart.id} and fullfillment handled successfully.")
             except Exception as e:
-                self.record_audit_log(
-                    action='TransactionRolledBack',
-                    details=(
-                        f'Transaction: {data.get("fort_id")} for cart: {self.cart.id} and site: '
-                        f'{self.site.id} rolled back.'
-                    ),
-                    user=self.cart.user
+                AuditLog.log(
+                    action=AuditLog.AuditActions.TRANSACTION_ROLLED_BACK,
+                    cart=self.cart,
+                    gateway=self.payment_processor.SLUG,
+                    context={
+                        'transaction_id': data['fort_id'],
+                        'cart_id': self.cart.id,
+                        'site_id': self.site.id
+                    }
                 )
                 logger.error(f"Transaction failed and was rolled back: {str(e)}")
         else:

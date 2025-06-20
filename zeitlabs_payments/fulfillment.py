@@ -68,15 +68,14 @@ class PaidCourseFulfillment(BaseFulfillmentStrategy):
             logger.error(
                 f'CourseMode not found for SKU: {item.catalogue_item.sku} - Item ID: {item.id}'
             )
-            AuditLog.objects.create(
-                user=cart.user,
-                action='CartFulfillmentError',
-                gateway=processor_slug,
-                details=(
-                    f'Error during cart: {cart.id} fulfillment for item: {item.id}, catalogue_item:'
-                    f' {item.catalogue_item.id} due to invalid sku: {item.catalogue_item.sku} as'
-                    f' CourseMode does not exist.'
-                )
+            AuditLog.log(
+                action=AuditLog.AuditActions.CART_FULFILLMENT_ERROR,
+                cart=cart,
+                context={
+                    'item_id': item.id,
+                    'catalogue_item_id': item.catalogue_item.id,
+                    'sku': item.catalogue_item.sku,
+                }
             )
             raise CartFulfillmentError('CourseMode not found') from exc
 
@@ -86,14 +85,14 @@ class PaidCourseFulfillment(BaseFulfillmentStrategy):
                 course_mode.course.id,
                 mode=course_mode.mode_slug,
             )
-            AuditLog.objects.create(
-                user=cart.user,
-                action='UserEnrolled',
-                gateway=processor_slug,
-                details=(
-                    f'User enrolled to the course: {course_mode.course.id} with mode: {course_mode.mode_slug} '
-                    f'during cart: {cart.id} fulfillment for catalogue_item: {item.catalogue_item.id}.'
-                )
+            AuditLog.log(
+                action=AuditLog.AuditActions.USER_ENROLLED,
+                cart=cart,
+                context={
+                    'course_id': course_mode.course.id,
+                    'mode_slug': course_mode.mode_slug,
+                    'catalogue_item_id': item.catalogue_item.id,
+                }
             )
             logger.info(
                 f'User {cart.user.id} enrolled in course {course_mode.course.id} '
@@ -104,14 +103,13 @@ class PaidCourseFulfillment(BaseFulfillmentStrategy):
                 f'Unexpected error while enrolling user {cart.user.id} in course: '
                 f'{course_mode.course.id}. Item ID: {item.id}'
             )
-            AuditLog.objects.create(
-                user=cart.user,
-                action='UserEnrolledError',
-                gateway=processor_slug,
-                details=(
-                    f'Unable to complete user enrollment to course: {course_mode.course.id} with mode: '
-                    f'{course_mode.mode_slug} during cart: {cart.id} fulfillment for '
-                    f'catalogue_item: {item.catalogue_item.id}.'
-                )
+            AuditLog.log(
+                action=AuditLog.AuditActions.USER_ENROLLED_ERROR,
+                cart=cart,
+                context={
+                    'course_id': course_mode.course.id,
+                    'mode_slug': course_mode.mode_slug,
+                    'catalogue_item_id': item.catalogue_item.id
+                }
             )
             raise CartFulfillmentError('Unexpected enrollment error') from exc

@@ -147,14 +147,14 @@ class BaseProcessor:
         """
         if Transaction.objects.filter(gateway_transaction_id=transaction_id).exists():
             logger.warning(f'Duplicate transaction detected while cart: {cart.id} processing.')
-            AuditLog.objects.create(
-                user=cart.user,
-                action='DuplicateTransactionDetected',
+            AuditLog.log(
+                action=AuditLog.AuditActions.DUPLICATE_TRANSACTION,
+                cart=cart,
                 gateway=self.SLUG,
-                details=(
-                    f'Transaction with id: {transaction_id} already existed. Related cart: {cart.id} '
-                    f' has status: {cart.status}.'
-                )
+                context={
+                    'transaction_id': transaction_id,
+                    'cart_status': cart.status
+                }
             )
             return
         transaction_record = Transaction.objects.create(
@@ -182,11 +182,13 @@ class BaseProcessor:
 
         cart.status = Cart.Status.PAID
         cart.save(update_fields=['status'])
-        AuditLog.audit_log_cart_status_updated(
-            cart.user,
-            cart.id,
-            Cart.Status.PROCESSING,
-            Cart.Status.PAID,
+        AuditLog.log(
+            action=AuditLog.AuditActions.CART_STATUS_UPDATED,
+            cart=cart,
+            context={
+                'old_status': Cart.Status.PROCESSING,
+                'new_status': Cart.Status.PAID,
+            }
         )
         logger.info(f'Cart marked as PAID: {cart.id}')
 
@@ -207,14 +209,14 @@ class BaseProcessor:
                     f'No fulfillment handler registered for item type: {item.catalogue_item.type} '
                     f'for item {item.catalogue_item.id} in cart {cart.id}'
                 )
-                AuditLog.objects.create(
-                    user=cart.user,
-                    action='CartFulfillmentError',
-                    gateway=self.SLUG,
-                    details=(
-                        f'Error during cart: {cart.id} fulfillment for item: {item.id}, catalogue_item:'
-                        f' {item.catalogue_item.id} due to unsupported type: {item.catalogue_item.type}.'
-                    )
+                AuditLog.log(
+                    action=AuditLog.AuditActions.CART_FULFILLMENT_ERROR,
+                    cart=cart,
+                    context={
+                        'item_id': item.id,
+                        'catalogue_item_id': item.catalogue_item.id,
+                        'sku': item.catalogue_item.sku,
+                    }
                 )
                 raise CartFulfillmentError(f'Unsupported catalogue item type: {item.catalogue_item.type}')
 

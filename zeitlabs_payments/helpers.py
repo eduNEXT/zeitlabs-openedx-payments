@@ -9,7 +9,7 @@ from urllib.parse import urljoin
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
 
 from zeitlabs_payments.exceptions import GatewayError
-from zeitlabs_payments.models import Cart, CartItem, CatalogueItem
+from zeitlabs_payments.models import Cart, CartItem, CatalogueItem, AuditLog
 
 VALID_CURRENCY = 'SAR'
 VALID_PATTERNS = {
