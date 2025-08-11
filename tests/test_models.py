@@ -1,9 +1,15 @@
 """test for models."""
 
-import pytest
-from django.core.exceptions import ValidationError
+from decimal import Decimal
 
-from zeitlabs_payments.models import AuditLog, Cart
+import pytest
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
+from django.utils import timezone
+
+from zeitlabs_payments.models import AuditLog, Cart, Coupon, CouponUsage, TaxRule
+
+User = get_user_model()
 
 
 @pytest.mark.django_db
@@ -73,3 +79,94 @@ class TestAuditLogModel:
         assert log.details == str(context)
         assert log.cart == self.cart
         assert log.gateway == 'payfort'
+
+
+@pytest.mark.django_db
+class TestTaxRule:
+    """Test for TaxRule class methods"""
+
+    def test_calculate_tax_percentage(self):
+        rule = TaxRule.objects.create(
+            name='VAT',
+            tax_type=TaxRule.TaxType.PERCENT,
+            tax_value=Decimal('15.00'),
+            is_active=True
+        )
+        base_price = Decimal('100.00')
+        tax = TaxRule.calculate_tax(base_price, rule)
+        assert tax == Decimal('15.00'), f'Expected 15% of {base_price} to be 15.00 but got {tax}'
+
+    def test_calculate_tax_fixed(self):
+        rule = TaxRule.objects.create(
+            name='Fixed Tax',
+            tax_type=TaxRule.TaxType.FIXED,
+            tax_value=Decimal('5.00'),
+            is_active=True
+        )
+        base_price = Decimal('100.00')
+        tax = TaxRule.calculate_tax(base_price, rule)
+        assert tax == Decimal('5.00'), f'Expected 5.00 as fixed_price disocunt but got {tax}'
+
+    def test_calculate_tax_no_rule(self):
+        tax = TaxRule.calculate_tax(Decimal('100.00'), None)
+        assert tax == Decimal('0.00')
+
+    def test_get_applicable_tax_returns_last_active(self):
+        TaxRule.objects.create(
+            name='Old Tax',
+            tax_type=TaxRule.TaxType.PERCENT,
+            tax_value=Decimal('5.00'),
+            is_active=True
+        )
+        latest_rule = TaxRule.objects.create(
+            name='New Tax',
+            tax_type=TaxRule.TaxType.FIXED,
+            tax_value=Decimal('10.00'),
+            is_active=True
+        )
+
+        base_price = Decimal('200.00')
+        tax_rule, tax_amount = TaxRule.get_applicable_tax(base_price)
+
+        assert tax_rule == latest_rule
+        assert tax_amount == Decimal('10.00')
+
+    def test_get_applicable_tax_no_active_rule(self):
+        base_price = Decimal('100.00')
+        tax_rule, tax_amount = TaxRule.get_applicable_tax(base_price)
+        assert tax_rule is None
+        assert tax_amount == Decimal('0.00')
+
+    def test_str_percentage(self):
+        rule = TaxRule.objects.create(
+            name='Service Tax',
+            tax_type=TaxRule.TaxType.PERCENT,
+            tax_value=Decimal('12.50'),
+            is_active=True
+        )
+        assert str(rule) == 'Service Tax - 12.50%'
+
+    def test_str_fixed(self):
+        rule = TaxRule.objects.create(
+            name='Processing Fee',
+            tax_type=TaxRule.TaxType.FIXED,
+            tax_value=Decimal('3.00'),
+            is_active=True
+        )
+        assert str(rule) == 'Processing Fee - 3.00'
+
+
+@pytest.mark.django_db
+def test_usage_count_sums_correctly():
+    coupon = Coupon.objects.create(
+        code='SUMMER2025',
+        discount_type=Coupon.DiscountType.PERCENTAGE,
+        discount_value=Decimal('15.00'),
+        max_usage=10,
+        expires_at=timezone.now() + timezone.timedelta(days=10)
+    )
+    user1 = User.objects.get(id=1)
+    user2 = User.objects.get(id=2)
+    CouponUsage.objects.create(coupon=coupon, user=user1, count=3)
+    CouponUsage.objects.create(coupon=coupon, user=user2, count=2)
+    assert coupon.usage_count == 5

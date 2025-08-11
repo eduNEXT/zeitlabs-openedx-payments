@@ -3,7 +3,7 @@ from typing import Any
 
 from django.contrib import admin
 
-from .models import AuditLog, Cart, CartItem, CatalogueItem, Invoice, InvoiceItem, Transaction, WebhookEvent
+from .models import AuditLog, Cart, CartItem, CatalogueItem, Invoice, InvoiceItem, TaxRule, Transaction, WebhookEvent
 
 
 @admin.register(Cart)
@@ -147,4 +147,17 @@ class InvoiceItemAdmin(admin.ModelAdmin):
         'updated_at',
     )
     search_fields = ('invoice__invoice_number',)
+    readonly_fields = ('created_at', 'updated_at')
+
+
+@admin.register(TaxRule)
+class TaxRuleAdmin(admin.ModelAdmin):
+    """
+    Admin for TaxRule model.
+    """
+
+    list_display = ('name', 'tax_type', 'tax_value', 'is_active', 'created_at', 'updated_at')
+    list_filter = ('tax_type', 'is_active')
+    search_fields = ('name',)
+    ordering = ('-is_active', '-id')
     readonly_fields = ('created_at', 'updated_at')

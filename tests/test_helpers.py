@@ -393,7 +393,8 @@ def test_generate_invoice_number_with_existing_invoice(existing_invoice_number, 
     Invoice.objects.create(
         invoice_number=existing_invoice_number,
         total=100,
-        cart=Cart.objects.create(user=User.objects.get(id=3), status=Cart.Status.PAID)
+        cart=Cart.objects.create(user=User.objects.get(id=3), status=Cart.Status.PAID),
+        gross_total=100
     )
     invoice_number = generate_invoice_number(request=None)
     assert invoice_number == expected_invoice_number

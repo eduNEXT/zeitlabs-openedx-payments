@@ -92,7 +92,7 @@
                 <dt class="line-price sr">{% trans "Unit Price:" as tmsg %}{{ tmsg | force_escape }}</dt>
                 <dd class="line-price price">{{ invoice_item.original_price }} {{ currency }}</dd>
                 <dt class="line-vat sr">{% trans "VAT" as tmsg %}{{ tmsg | force_escape }}</dt>
-                <dd class="line-vat vat">0.00 {{ currency }}</dd>
+                <dd class="line-vat vat">{{ invoice_item.tax_amount }} {{ currency }}</dd>
                 <dt class="line-total sr">{% trans "Total:" as tmsg %}{{ tmsg | force_escape }}</dt>
                 <dd class="line-total total">{{ invoice_item.price }} {{ currency }}</dd>
               </div>
@@ -103,11 +103,11 @@
           <div class="order-totals">
             <div class="order-total">
               <div class="description">{% trans "Subtotal" as tmsg %}{{ tmsg | force_escape }}</div>
-              <div class="price">{{ invoice.total }} {{ currency }}</div>
+              <div class="price">{{ invoice.gross_total }} {{ currency }}</div>
             </div>
             <div class="order-total">
               <div class="description">{% trans "VAT" as tmsg %}{{ tmsg | force_escape }}</div>
-              <div class="price">0.00 {{ currency }}</div>
+              <div class="price">{{ invoice.tax_total }} {{ currency }}</div>
             </div>
             <div class="order-total">
               <div class="description">{% trans "Total" as tmsg %}{{ tmsg | force_escape }}</div>

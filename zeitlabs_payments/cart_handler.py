@@ -9,7 +9,7 @@ from django.contrib.auth import get_user_model
 
 from zeitlabs_payments.exceptions import CartFulfillmentError, InvalidCartError
 from zeitlabs_payments.helpers import cancel_old_pending_carts, check_user_enroll_conditions
-from zeitlabs_payments.models import AuditLog, Cart, CartItem, CatalogueItem
+from zeitlabs_payments.models import AuditLog, Cart, CartItem, CatalogueItem, TaxRule
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +57,16 @@ class BaseCartHandler:
             cancel_old_pending_carts(user)
         cart = Cart.objects.create(user=user, status=Cart.Status.PENDING)
         logger.info(f'Created new pending cart {cart.id} for user {user}')
+
+        _, tax_amount = TaxRule.get_applicable_tax(catalog_item.price)
+        final_price = catalog_item.price + tax_amount
+
         CartItem.objects.create(
             cart=cart,
             catalogue_item=catalog_item,
             original_price=catalog_item.price,
-            final_price=catalog_item.price,
+            tax_amount=tax_amount,
+            final_price=final_price,
         )
         logger.info(f'Added catalogue item {catalog_item.sku} to cart {cart.id}')
         return cart
