@@ -1,7 +1,7 @@
 # Core requirements for using this application
--c constraints.txt
 
 Django             # Web application framework
 
 
 openedx-atlas
+qrcode
