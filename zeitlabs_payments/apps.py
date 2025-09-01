@@ -28,4 +28,15 @@ class ZeitlabsPaymentsConfig(AppConfig):
             },
         },
     }
-    # pylint: enable=duplicate-code
+
+    def ready(self) -> None:
+        """
+        Apply dynamic runtime modifications.
+        """
+        from edx_django_utils.plugins import pluggable_override  # pylint: disable=import-outside-toplevel
+        from lms.djangoapps.commerce.utils import EcommerceService  # pylint: disable=import-outside-toplevel
+
+        # Monkeypatch `EcommerceService.get_checkout_page_url` to apply the @pluggable_override decorator.
+        original_fn = EcommerceService.get_checkout_page_url
+        decorated_fn = pluggable_override('OVERRIDE_ECOMMERCE_SERVICE_CHECKOUT_PAGE')(original_fn)
+        EcommerceService.get_checkout_page_url = decorated_fn
