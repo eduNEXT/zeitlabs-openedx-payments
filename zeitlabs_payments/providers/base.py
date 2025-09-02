@@ -153,8 +153,10 @@ class BaseProcessor:
             invoice_number=generate_invoice_number(request),
             cart=cart,
             status=Invoice.InvoiceStatus.PAID,
-            total=cart.total,
+            gross_total=cart.gross_total,
             discount_total=cart.discount_total,
+            tax_total=cart.tax_total,
+            total=cart.total,
             currency=get_currency(cart),
             paid_at=timezone.now(),
             related_transaction=transaction_record
@@ -165,6 +167,7 @@ class BaseProcessor:
                 cart_item=item,
                 original_price=item.original_price,
                 discount_amount=item.discount_amount,
+                tax_amount=item.tax_amount,
                 price=item.final_price,
             )
 

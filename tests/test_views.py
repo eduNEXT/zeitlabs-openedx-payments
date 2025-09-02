@@ -316,7 +316,12 @@ class InvoiceViewTest(BaseTestViewMixin):
         user = User.objects.get(id=3)
         self.login_user(user)
         cart = Cart.objects.create(user=user, status=Cart.Status.PAID)
-        invoice = Invoice.objects.create(cart=cart, invoice_number='TEST-111111', total=100)
+        invoice = Invoice.objects.create(
+            cart=cart,
+            invoice_number='TEST-111111',
+            total=100,
+            gross_total=100,
+        )
         self.url_args = [invoice.invoice_number]
         response = self.client.get(self.url)
 
@@ -341,15 +346,30 @@ class InvoiceViewTest(BaseTestViewMixin):
         """
         admin_user = User.objects.get(id=1)
         admin_user_cart = Cart.objects.create(user=admin_user, status=Cart.Status.PAID)
-        admin_user_invoice = Invoice.objects.create(cart=admin_user_cart, invoice_number='TEST-111111', total=100)
+        admin_user_invoice = Invoice.objects.create(
+            cart=admin_user_cart,
+            invoice_number='TEST-111111',
+            total=100,
+            gross_total=100
+        )
 
         normal_user1 = User.objects.get(id=2)
         normal_user1_cart = Cart.objects.create(user=normal_user1, status=Cart.Status.PAID)
-        normal_user1_invoice = Invoice.objects.create(cart=normal_user1_cart, invoice_number='TEST-22222', total=100)
+        normal_user1_invoice = Invoice.objects.create(
+            cart=normal_user1_cart,
+            invoice_number='TEST-22222',
+            total=100,
+            gross_total=100
+        )
 
         normal_user2 = User.objects.get(id=3)
         normal_user2_cart = Cart.objects.create(user=normal_user2, status=Cart.Status.PAID)
-        normal_user2_invoice = Invoice.objects.create(cart=normal_user2_cart, invoice_number='TEST-33333', total=200)
+        normal_user2_invoice = Invoice.objects.create(
+            cart=normal_user2_cart,
+            invoice_number='TEST-33333',
+            total=200,
+            gross_total=200
+        )
 
         self.url_args = [normal_user2_invoice.invoice_number]
         self.login_user(admin_user)
@@ -377,7 +397,12 @@ class InvoiceViewTest(BaseTestViewMixin):
         user = User.objects.get(id=3)
         self.login_user(user)
         cart = Cart.objects.create(user=user, status=Cart.Status.PAID)
-        invoice = Invoice.objects.create(cart=cart, invoice_number='INV-222222', total=100)
+        invoice = Invoice.objects.create(
+            cart=cart,
+            invoice_number='INV-222222',
+            total=100,
+            gross_total=100
+        )
 
         transaction = Transaction.objects.create(
             cart=cart,

@@ -507,7 +507,8 @@ class PayFortStatusViewTest(APITestCase):
             status=Invoice.InvoiceStatus.PAID,
             invoice_number='DEV-100',
             related_transaction=transaction,
-            total=self.course_item.price
+            total=self.course_item.price,
+            gross_total=self.course_item.price,
         )
 
         response = self.client.get(self.url, data={

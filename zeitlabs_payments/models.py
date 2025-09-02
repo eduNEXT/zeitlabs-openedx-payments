@@ -1,5 +1,7 @@
 """Zeitlabs payments models."""
 import re
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -43,6 +45,16 @@ class Cart(TimeStampedModel):
     def discount_total(self) -> int:
         """Calculate discount total."""
         return sum(item.discount_amount for item in self.items.all())
+
+    @property
+    def tax_total(self) -> int:
+        """Calculate tax total."""
+        return sum(item.tax_amount for item in self.items.all())
+
+    @property
+    def gross_total(self) -> int:
+        """Calculate raw total before appling any discount and tax."""
+        return sum(item.original_price for item in self.items.all())
 
 
 class Transaction(TimeStampedModel):
@@ -191,8 +203,8 @@ class Coupon(TimeStampedModel):
 
     @property
     def usage_count(self) -> int:
-        """Get the number of times this coupon has been used."""
-        return self.usages.count()
+        """Get the total number of times this coupon has been used."""
+        return self.usages.aggregate(total=models.Sum('count'))['total'] or 0
 
 
 class CouponUsage(TimeStampedModel):
@@ -228,6 +240,7 @@ class CartItem(TimeStampedModel):
     catalogue_item = models.ForeignKey(CatalogueItem, on_delete=models.PROTECT)
     original_price = models.DecimalField(max_digits=10, decimal_places=2)
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     coupon = models.ForeignKey(Coupon, on_delete=models.SET_NULL, null=True, blank=True)
     final_price = models.DecimalField(max_digits=10, decimal_places=2)
 
@@ -245,8 +258,10 @@ class Invoice(TimeStampedModel):
     invoice_number = models.CharField(max_length=255, unique=True)
     cart = models.ForeignKey(Cart, on_delete=models.CASCADE, related_name='invoices')
     status = models.CharField(max_length=20, choices=InvoiceStatus.choices, default=InvoiceStatus.DRAFT)
-    total = models.DecimalField(max_digits=10, decimal_places=2)
+    gross_total = models.DecimalField(max_digits=10, decimal_places=2)
     discount_total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    tax_total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    total = models.DecimalField(max_digits=10, decimal_places=2)
     currency = models.CharField(max_length=3)
     paid_at = models.DateTimeField(blank=True, null=True)
     related_transaction = models.ForeignKey(Transaction, on_delete=models.SET_NULL, null=True, blank=True)
@@ -259,7 +274,8 @@ class InvoiceItem(TimeStampedModel):
     cart_item = models.ForeignKey(CartItem, on_delete=models.SET_NULL, null=True)
     original_price = models.DecimalField(max_digits=10, decimal_places=2)
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    price = models.DecimalField(max_digits=10, decimal_places=2)
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    price = models.DecimalField(max_digits=10, decimal_places=2)  # includes tax
     quantity = models.PositiveIntegerField(default=1)
 
 
@@ -271,3 +287,59 @@ class CreditMemo(TimeStampedModel):
     reason = models.TextField()
     gateway_refund_transaction_id = models.CharField(max_length=255)
     transaction = models.ForeignKey(Transaction, on_delete=models.SET_NULL, null=True, blank=True)
+
+
+class TaxRule(TimeStampedModel):
+    """Tax rule."""
+
+    class TaxType(models.TextChoices):
+        """Tax calculation type."""
+
+        PERCENT = 'percentage', 'Percentage'
+        FIXED = 'fixed', 'Fixed Amount'
+
+    name = models.CharField(max_length=255, help_text='Internal name for the tax rule.')
+    tax_type = models.CharField(
+        max_length=20,
+        choices=TaxType.choices,
+        default=TaxType.PERCENT,
+        help_text='Whether the tax is percentage-based or fixed amount.'
+    )
+    tax_value = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text='If percentage: store rate (e.g., 15 for 15%). If fixed: store amount (e.g., 2.50).'
+    )
+    is_active = models.BooleanField(default=True)
+
+    @classmethod
+    def calculate_tax(cls, base_price: Decimal, tax_rule: Any) -> Decimal:
+        """
+        Calculate tax amount for the given price using the provided tax rule.
+        """
+        if not tax_rule:
+            return Decimal('0.00')
+
+        if tax_rule.tax_type == cls.TaxType.PERCENT:
+            tax_amount = (base_price * tax_rule.tax_value) / Decimal('100')
+        else:
+            tax_amount = tax_rule.tax_value
+
+        return tax_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    @classmethod
+    def get_applicable_tax(cls, base_price: Decimal, **kwargs: Any) -> tuple:
+        """
+        Return a tuple: (tax_rule, tax_amount) for the given price.
+        kwargs can be used for filtering by location, user, or product in future.
+        """
+        # Get last active rule
+        tax_rule = cls.objects.filter(is_active=True).order_by('-id').first()
+        tax_amount = cls.calculate_tax(base_price, tax_rule)
+        return tax_rule, tax_amount
+
+    def __str__(self) -> str:
+        """Represent object as string."""
+        if self.tax_type == self.TaxType.PERCENT:
+            return f'{self.name} - {self.tax_value}%'
+        return f'{self.name} - {self.tax_value}'
