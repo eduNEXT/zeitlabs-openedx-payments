@@ -1,145 +1,327 @@
 zeitlabs-payments
 #################
 
-.. note::
-
-  This README was auto-generated. Maintainer: please review its contents and
-  update all relevant sections. Instructions to you are marked with
-  "PLACEHOLDER" or "TODO". Update or remove those sections, and remove this
-  note when you are done.
-
-|pypi-badge| |ci-badge| |codecov-badge| |doc-badge| |pyversions-badge|
-|license-badge| |status-badge|
+A pluggable Django/Python plugin for Open edX that simplifies payment integration.
 
 Purpose
 *******
 
-Simple Ecommerce for Open edX payments
+A lightweight, Django/Python-based, pluggable payment framework for Open edX as an edx-platform plugin.
 
-TODO: The ``README.rst`` file should start with a brief description of the repository and its purpose.
-It should be described in the context of other repositories under the ``openedx``
-organization. It should make clear where this fits into the overall Open edX
-codebase and should be oriented towards people who are new to the Open edX
-project.
+Comparision to Existing Solutions
+*********************************
+
+There's more than one option for payment in Open edX. Most have their own flaws, and this is a quick comparision of why this is the most-viable solution:
+
+.. list-table:: Open edX Payment Solutions Comparison
+   :header-rows: 1
+   :widths: auto
+
+   * - **Feature**
+     - **Zeitlabs Payments**
+     - **Openedx/ecommerce**
+     - **WooCommerce**
+     - **Saleor**
+   * - URL
+     - https://github.com/zeit-labs/zeitlabs-payments/  
+       Supported for all Open edX releases starting from Redwood
+     - https://github.com/openedx/unsupported/ecommerce (Deprecated)
+     - https://github.com/openedx/openedx-wordpress-ecommerce
+       Not supported yet. Proof of concept ready.
+     - https://saleor.io/
+   * - Support
+     - Supported for all Open edX releases starting from Redwood
+     - Deprecated
+     - Supported (from ??)
+     - Not supported yet
+   * - Technology
+     - Python, Django
+     - Python, Django
+     - PHP and Python
+     - Python
+   * - Integration
+     - edx-platform plugin
+     - Micro-service
+     - Plugin, and WordPress Micro-service
+     - (empty in source)
+   * - Type of Solution
+     - Payments Feature
+     - Full ecommerce solution, modified for Open edX
+     - Full ecommerce solution, modified for Open edX
+     - Full ecommerce solution, modified for Open edX
+   * - Multi-tenancy model
+     - Standard Open edX multi-tenancy using SiteConfiguration or eox_tenant
+     - Customized, different Open edX multi-tenancy (Oscar Commerce)
+     - ?
+     - Customized, different Open edX multi-tenancy (Oscar Commerce)
+   * - Small Instance
+     - Suitable via Tutor plugin, ready
+     - N/A
+     - Needs PHP expertise
+     - Needs Saleor expertise
+   * - Ideal User
+     - Most Open edX installations
+     - Only suitable for 2U / edX.org from now on
+     - Established WooCommerce users with in-house PHP expertise
+     - Established Saleor users
+   * - Ease of Install
+     - High
+     - Medium
+     - Medium to Low
+     - Low
+   * - Recurring Subscriptions
+     - Planned feature
+     - Not available
+     - (empty)
+     - (empty)
+   * - Solution Complexity
+     - Low: Focused, simple
+     - High: Complex shipping & unused components
+     - High: Complex WordPress, ecommerce shipping, etc.
+     - High: Complex ecommerce, shipping, etc.
+   * - Admin Experience
+     - High: Centralized in /admin panels
+     - Low: Fractured across multiple /admin panels
+     - Low: Fractured across multiple systems
+     - Low: Fractured across multiple systems
+   * - Purchase Experience
+     - High: Smooth payment flow
+     - High: Smooth payment flow
+     - High: Smooth payment flow
+     - High: Smooth payment flow
+   * - Make a Course Paid UX
+     - High: Single click & configure
+     - Low: Fractured across /admin panels
+     - Low: Fractured across /admin panels
+     - Low: Fractured across multiple systems
+   * - Payment Processors Support
+     - New system, processors must migrate from ecommerce
+     - Deprecated
+     - High
+     - ??
+   * - Cost of Installation / Operation
+     - Free / Open Source, works out of the box
+     - Deprecated
+     - Additional WordPress hosting fees needed. Free otherwise
+     - Additional Saleor hosting fees needed. Free otherwise
+   * - Transaction Fees
+     - None. Free / Open Source. No transaction fees
+     - None. Free / Open Source. No transaction fees
+     - None. Free / Open Source. No transaction fees
+     - None. Free / Open Source. No transaction fees
+
+
+What Open edX requires is not a full eCommerce store, but reliable and straightforward payment flows -- something simple enough for a the admin to make a course purchasable, yet flexible enough to scale for larger institutional deployments.
+
+This plugin brings a simpler, smarter, and more maintainable approach to Open edX payments -- one that works today and grows with tomorrow’s needs.
+
+Features
+********
+
+- **Seamless Integration** – Built with Django/Python, feels native to Open edX.
+- **Lightweight & Cost-Effective** – No extra servers or infrastructure overhead.
+- **Plug-and-Play Setup** – Fast integration, easy to manage via the admin panel.
+- **Familiar User Experience** – Checkout flow consistent with Open edX’s deprecated eCommerce.
+- **Future-Ready** – Starting with Payfort support, with more gateways, discounts, and coupon features on the roadmap.
+- **Tailored for Open edX:** Supports course purchase, program purchase and subscriptions in addition to custom purchase models due to its native integration with the edx-platform.
+- **No Burden** – No need to maintain another server, or have your team learn new technologies.
 
 Getting Started with Development
 ********************************
 
-Please see the Open edX documentation for `guidance on Python development`_ in this repo.
+Clone repo
+==========
 
-.. _guidance on Python development: https://docs.openedx.org/en/latest/developers/how-tos/get-ready-for-python-dev.html
+.. code-block:: bash
+
+   git clone git@github.com:zeit-labs/zeitlabs-payments.git
+
+
+Add the app to the Open edX platform in Tutor development mode
+==============================================================
+
+1. Create (or open existing) ``docker-compose.override.yml`` file:
+
+.. code-block:: bash
+
+   vi "$(tutor config printroot)/env/dev/docker-compose.override.yml"
+
+2. Add the volume mapping so your project will be available inside the container without the need to rebuild it:
+
+.. code-block:: yaml
+
+   version: "3.7"
+   services:
+     lms:
+       volumes:
+       - <YOUR-CLONED-DIRECTORY-PATH>:/openedx/requirements/zeitlabs-payments/
+
+3. Restart containers with the new volume:
+
+.. code-block:: bash
+
+   tutor dev stop;
+   tutor dev start -d;
+   
+
+4. Install the app:
+
+.. code-block:: bash
+
+   tutor dev exec lms bash
+   cd /openedx/requirements/zeitlabs-payments && pip install -e .
+
+5. Restart the container:
+
+.. code-block:: bash
+
+   tutor dev restart lms
+
+   # That’s it for the development version. Once you make any changes to your code,
+   # the LMS server will be automatically restarted and your changes applied.
+   # The URL patterns you specify in your urls.py will also work.
+
+6. How to run migrations:
+
+.. code-block:: bash
+
+   tutor dev exec lms bash
+   python manage.py lms migrate zeitlabs_payments
+
+7. Verify Installation
+
+Go to the Django admin panel and ensure that the **ZeitLabs Payments** tables are listed there.
+
 
 Deploying
 *********
 
-TODO: How can a new user go about deploying this component? Is it just a few
-commands? Is there a larger how-to that should be linked here?
+To enable the plugin in your Tutor deployment, add the following to your
+``$(tutor config printroot)``/config.yml:
 
-PLACEHOLDER: For details on how to deploy this component, see the `deployment how-to`_.
+.. code-block:: yaml
 
-.. _deployment how-to: https://docs.openedx.org/projects/zeitlabs-payments/how-tos/how-to-deploy-this-component.html
+    OPENEDX_EXTRA_PIP_REQUIREMENTS:
+      - git+https://github.com/zeit-labs/zeitlabs-payments.git
 
-Getting Help
-************
 
-Documentation
-=============
+How to use:
+***********
 
-PLACEHOLDER: Start by going through `the documentation`_.  If you need more help see below.
+Set following config settings
+=============================
 
-.. _the documentation: https://docs.openedx.org/projects/zeitlabs-payments
+The following settings need to be added in ``config.yml``:
 
-(TODO: `Set up documentation <https://openedx.atlassian.net/wiki/spaces/DOC/pages/21627535/Publish+Documentation+on+Read+the+Docs>`_)
+.. code-block:: yaml
 
-More Help
-=========
+   PAYFORT_SETTINGS = {
+       'access_code': '<YOUR-ACCESS-CODE>',
+       'request_sha_phrase': '<YOUR-REQUEST-SHA-PHRASE>',
+       'response_sha_phrase': '<YOUR-RESPONSE-SHA-PHRASE>',
+       'sha_method': 'SHA-256',
+       'redirect_url': 'https://sbcheckout.payfort.com/FortAPI/paymentPage'
+   }
 
-If you're having trouble, we have discussion forums at
-https://discuss.openedx.org where you can connect with others in the
-community.
+   ECOMMERCE_PUBLIC_URL_ROOT = <YOUR-LMS-URL>  # e.g. 'https://zeit.labs.io:8000/'
+   # Used if LMS_ROOT_URL is not set in site configuration.
 
-Our real-time conversations are on Slack. You can request a `Slack
-invitation`_, then join our `community Slack workspace`_.
+   INVOICE_PREFIX = <YOUR-INVOICE-PREFIX>  # e.g. 'DEV'
+   # Default invoice prefix (used for invoice numbers). Can also be set
+   # per-site in site configurations.
 
-For anything non-trivial, the best path is to open an issue in this
-repository with as many details about the issue you are facing as you
-can provide.
+   ORGANIZATION = <YOUR-ORGANIZATION-NAME>
+   # This will be shown on invoices.
 
-https://github.com/zeit-labs/zeitlabs-payments/issues
+   CUSTOMER_NUMBER = <YOUR-CUSTOMER-NUMBER>
+   # This will be shown on invoices.
 
-For more information about these options, see the `Getting Help <https://openedx.org/getting-help>`__ page.
+   IS_ZEITLABS_PAYMENTS_ENABLED = True
+   # Default flag to enable/disable the plugin. Can also be controlled
+   # per-site from site configuration.
 
-.. _Slack invitation: https://openedx.org/slack
-.. _community Slack workspace: https://openedx.slack.com/
+
+Convert course to a Paid Course
+===============================
+
+1. Create an **edX course mode** and set SKU and price  from django Admin.
+2. Create a **Catalogue Item** in ``zeitlabs_payments`` with the same SKU and price, and add the course ID as ``item_ref_id``.  
+3. Try to **enroll or upgrade** a course. It should redirect to the checkout page where the learner can see the **Pay with Payfort** button.  
+4. After payment, the user will be redirected back to the platform’s **invoice page**, and their enrollment status will be updated.  
+5. Check the **Audit Logs** table in case of failures or to review responses from the payment gateway.  
+
+
+Run Tests
+*********
+
+1. Create and activate a virtual environment with Python **3.11.0**.
+
+2. Install ``tox``:
+
+   .. code-block:: bash
+
+      pip install tox==3.28.0
+
+3. Run Quality tests:
+
+   .. code-block:: bash
+
+      tox -e quality
+
+4. Run Unit tests:
+
+   .. code-block:: bash
+
+      tox -e py311-django42
+
+Extending Zeitlabs Payments
+***************************
+
+Zeitlabs Payments is designed to be **pluggable and extensible**.  
+Adding a new payment processor or gateway is straightforward, thanks to the built-in `BaseProcessor` class.  
+
+The `BaseProcessor` already includes all the core functionality you need:
+- Cart handling
+- Payment flow
+- Invoice creation
+- Integration hooks with the Open edX platform
+
+All you need to do is:
+1. Create an Open edX Django plugin for your processor.
+2. Extend the `BaseProcessor` and override the required methods.
+3. Add your processor to the entry points, for example:
+
+   .. code-block:: python
+
+       entry_points={
+           'lms.djangoapp': [
+               'payfort = payfort.apps:PayfortConfig',
+           ],
+           'zeitlabs_payments.v1': [
+               'payfort = payfort.processor:PayFort',
+           ]
+       }
+
+4. (Optional) Add any custom views your processor may require (e.g., redirects, webhooks).
+
+Zeitlabs Payments will automatically discover and load all processors defined under the
+``zeitlabs_payments.v1`` entry point, making them instantly available in the system.
+
+Reference Implementation
+========================
+
+We have already built a working PayFort plugin, which you can use as a reference to create your own gateway:  
+https://github.com/zeit-labs/zeitlabs-payfort
+
+Use it as a **starting point** when building your own payment gateway integration.
+
+Status
+******
+
+In active development, currently being deployed on our first cluster. 
+Test it and provide your feedback.
 
 License
 *******
 
-The code in this repository is licensed under the Apache Software License 2.0 unless
-otherwise noted.
-
-Please see `LICENSE.txt <LICENSE.txt>`_ for details.
-
-Contributing
-************
-
-Contributions are very welcome.
-Please read `How To Contribute <https://openedx.org/r/how-to-contribute>`_ for details.
-
-This project is currently accepting all types of contributions, bug fixes,
-security fixes, maintenance work, or new features.  However, please make sure
-to discuss your new feature idea with the maintainers before beginning development
-to maximize the chances of your change being accepted.
-You can start a conversation by creating a new issue on this repo summarizing
-your idea.
-
-The Open edX Code of Conduct
-****************************
-
-All community members are expected to follow the `Open edX Code of Conduct`_.
-
-.. _Open edX Code of Conduct: https://openedx.org/code-of-conduct/
-
-People
-******
-
-The assigned maintainers for this component and other project details may be
-found in `Backstage`_. Backstage pulls this data from the ``catalog-info.yaml``
-file in this repo.
-
-.. _Backstage: https://backstage.openedx.org/catalog/default/component/zeitlabs-payments
-
-Reporting Security Issues
-*************************
-
-Please do not report security issues in public. Please email security@openedx.org.
-
-.. |pypi-badge| image:: https://img.shields.io/pypi/v/zeitlabs-payments.svg
-    :target: https://pypi.python.org/pypi/zeitlabs-payments/
-    :alt: PyPI
-
-.. |ci-badge| image:: https://github.com/zeit-labs/zeitlabs-payments/actions/workflows/ci.yml/badge.svg?branch=main
-    :target: https://github.com/zeit-labs/zeitlabs-payments/actions/workflows/ci.yml
-    :alt: CI
-
-.. |codecov-badge| image:: https://codecov.io/github/zeit-labs/zeitlabs-payments/coverage.svg?branch=main
-    :target: https://codecov.io/github/zeit-labs/zeitlabs-payments?branch=main
-    :alt: Codecov
-
-.. |doc-badge| image:: https://readthedocs.org/projects/zeitlabs-payments/badge/?version=latest
-    :target: https://docs.openedx.org/projects/zeitlabs-payments
-    :alt: Documentation
-
-.. |pyversions-badge| image:: https://img.shields.io/pypi/pyversions/zeitlabs-payments.svg
-    :target: https://pypi.python.org/pypi/zeitlabs-payments/
-    :alt: Supported Python versions
-
-.. |license-badge| image:: https://img.shields.io/github/license/zeit-labs/zeitlabs-payments.svg
-    :target: https://github.com/zeit-labs/zeitlabs-payments/blob/main/LICENSE.txt
-    :alt: License
-
-.. TODO: Choose one of the statuses below and remove the other status-badge lines.
-.. |status-badge| image:: https://img.shields.io/badge/Status-Experimental-yellow
-.. .. |status-badge| image:: https://img.shields.io/badge/Status-Maintained-brightgreen
-.. .. |status-badge| image:: https://img.shields.io/badge/Status-Deprecated-orange
-.. .. |status-badge| image:: https://img.shields.io/badge/Status-Unsupported-red
+The code in this repository is licensed under the **Apache Software License 2.0**.
