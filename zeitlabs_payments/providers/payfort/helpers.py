@@ -4,7 +4,9 @@ import hashlib
 import re
 from typing import Any, Dict
 
-from zeitlabs_payments.helpers import VALID_CURRENCY, verify_param
+from django.conf import settings
+
+from zeitlabs_payments.helpers import verify_param
 from zeitlabs_payments.providers.payfort.exceptions import PayFortBadSignatureException, PayFortException
 
 MANDATORY_RESPONSE_FIELDS = [
@@ -80,7 +82,7 @@ def verify_response_format(response_data: Dict[str, Any]) -> None:
             f'Invalid amount in response (not a positive integer): {response_data["amount"]}'
         ) from exc
 
-    if response_data['currency'] != VALID_CURRENCY:
+    if response_data['currency'] != settings.VALID_CURRENCY:
         raise PayFortException(f'Invalid currency in response: {response_data["currency"]}')
 
     if response_data['command'] != 'PURCHASE':
