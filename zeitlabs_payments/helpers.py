@@ -25,7 +25,6 @@ from zeitlabs_payments.models import AuditLog, Cart, CartItem, CatalogueItem, In
 logger = logging.getLogger(__name__)
 
 
-VALID_CURRENCY = 'SAR'
 VALID_PATTERNS = {
     'order_description': r"[^A-Za-z0-9 '/\._\-#:$]",
     'customer_name': r"[^A-Za-z _\\/\-\.']",
@@ -60,9 +59,9 @@ def get_currency(cart: Cart) -> str:
     :rtype: str
     """
     for item in cart.items.all():
-        if item.catalogue_item.currency and item.catalogue_item.currency != VALID_CURRENCY:
+        if item.catalogue_item.currency and item.catalogue_item.currency != settings.VALID_CURRENCY:
             raise Exception(f'Currency not supported: {item.catalogue_item.currency}')
-    return VALID_CURRENCY
+    return settings.VALID_CURRENCY
 
 
 def get_language(request: Optional[Any]) -> str:

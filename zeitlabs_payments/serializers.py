@@ -5,7 +5,7 @@ from typing import Any, List, Optional
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
 from rest_framework import serializers
 
-from zeitlabs_payments.helpers import relative_url_to_absolute_url
+from zeitlabs_payments.helpers import get_currency, relative_url_to_absolute_url
 from zeitlabs_payments.models import Cart, CartItem, CatalogueItem
 
 logger = logging.getLogger(__name__)
@@ -170,10 +170,11 @@ class CartSerializer(serializers.ModelSerializer):
     """Cart serializer."""
 
     items = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
 
     class Meta:
         model = Cart
-        fields = ['id', 'user', 'status', 'created_at', 'items', 'total']
+        fields = ['id', 'user', 'status', 'created_at', 'items', 'total', 'currency']
 
     def get_items(self, obj: Cart) -> List[Any]:
         """
@@ -184,3 +185,12 @@ class CartSerializer(serializers.ModelSerializer):
         """
         serializer = CartItemSerializer(obj.items.all(), many=True, context=self.context)
         return serializer.data
+
+    def get_currency(self, obj: Cart) -> str:
+        """
+        Return currency.
+
+        :param obj: Cart instance
+        :return: currency str
+        """
+        return get_currency(obj)

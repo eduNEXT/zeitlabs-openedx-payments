@@ -58,7 +58,7 @@
 
                        <div id="basket_totals" class="col-xs-4 pull-right">
                         {% trans "Total:" as tmsg %}{{ tmsg | force_escape }}
-                        {{ cart.total }}
+                        {{ cart.total }} {{ cart.currency }}
                        </div>
                    </div>
                </div>

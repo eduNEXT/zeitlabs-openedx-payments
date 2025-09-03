@@ -29,7 +29,12 @@ def plugin_settings(settings: Any) -> None:
     settings.IS_ZEITLABS_PAYMENTS_ENABLED = getattr(
         settings,
         'IS_ZEITLABS_PAYMENTS_ENABLED',
-        '',
+        False,
+    )
+    settings.VALID_CURRENCY = getattr(
+        settings,
+        'VALID_CURRENCY',
+        'SAR',
     )
     settings.OVERRIDE_ECOMMERCE_SERVICE_CHECKOUT_PAGE = (
         'zeitlabs_payments.pluggable_overrides.override_ecommerce_checkout_page'
