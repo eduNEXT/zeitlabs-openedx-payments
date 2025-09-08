@@ -6,7 +6,7 @@ from typing import Any, Optional
 from django.contrib.auth import get_user_model
 from django.contrib.sites.models import Site
 from django.http import HttpRequest, HttpResponse
-from django.shortcuts import render
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.timezone import now
 from django.utils.translation import gettext_lazy as _
@@ -38,6 +38,19 @@ class BaseProcessor:
     NAME: str
     CHECKOUT_TEXT: str
     PAYMENT_INITIALIZATION_URL: str
+
+    @classmethod
+    def get_payment_method_metadata(cls, cart: Cart) -> dict:
+        """
+        Return metadata for frontend display for this payment processor.
+        :return: Dictionary with 'slug', 'title', and 'url'
+        """
+        return {
+            'slug': cls.SLUG,
+            'title': cls.NAME,
+            'checkout_text': cls.CHECKOUT_TEXT,
+            'url': reverse('zeitlabs_payments:initiate-payment', kwargs={'provider': cls.SLUG, 'cart_id': cart.id})
+        }
 
     def get_transaction_parameters(
         self,
@@ -90,15 +103,7 @@ class BaseProcessor:
         :param kwargs: Additional arguments
         :return: Rendered HTML response to redirect to the payment gateway
         """
-        transaction_parameters = self.get_transaction_parameters(
-            cart=cart,
-            request=request,
-            use_client_side_checkout=use_client_side_checkout,
-            **kwargs,
-        )
-        return render(request, f'zeitlabs_payments/processors/{self.SLUG}.html', {
-            'transaction_parameters': transaction_parameters,
-        })
+        raise NotImplementedError
 
     def get_cart(self, cart_id: str | int) -> Cart:
         """

@@ -67,14 +67,6 @@ TEMPLATES = [{
 # Avoid warnings about migrations
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 
-PAYFORT_SETTINGS = {
-    'access_code': 'test-code',
-    'merchant_identifier': 'test-identifier',
-    'request_sha_phrase': 'test-request-phrase',
-    'response_sha_phrase': 'test-response-phrase',
-    'sha_method': 'SHA-256',
-    'redirect_url': 'https://fake_payfort.com'
-}
 ECOMMERCE_PUBLIC_URL_ROOT = 'test.com'
 INVOICE_PREFIX = 'TEST'
 ORGANIZATION = 'test_org'
