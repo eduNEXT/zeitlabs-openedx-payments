@@ -20,7 +20,7 @@ from zeitlabs_payments import models
 from zeitlabs_payments.cart_handler import CART_HANDLER
 from zeitlabs_payments.exceptions import InvalidCartError
 from zeitlabs_payments.helpers import get_currency
-from zeitlabs_payments.providers.registry import PROCESSORS, get_processor, load_entrypoint_processors
+from zeitlabs_payments.providers.registry import PROCESSORS, get_processor
 from zeitlabs_payments.serializers import CartSerializer
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,6 @@ class CheckoutView(LoginRequiredMixin, TemplateView):
         """
         Checkout View. If SKU provided create a new cart otherwise render last pending cart of user.
         """
-        load_entrypoint_processors()
         sku_code = request.GET.get('sku')
         if sku_code:
             catalog_item = get_object_or_404(models.CatalogueItem, sku=sku_code)

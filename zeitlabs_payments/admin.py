@@ -2,8 +2,12 @@
 from typing import Any
 
 from django.contrib import admin
+from django.http import HttpResponse
+from django.shortcuts import render
+from django.urls import path, reverse
 
 from .models import AuditLog, Cart, CartItem, CatalogueItem, Invoice, InvoiceItem, TaxRule, Transaction, WebhookEvent
+from .providers.registry import PROCESSORS
 
 
 @admin.register(Cart)
@@ -161,3 +165,85 @@ class TaxRuleAdmin(admin.ModelAdmin):
     search_fields = ('name',)
     ordering = ('-is_active', '-id')
     readonly_fields = ('created_at', 'updated_at')
+
+
+class PaymentProcessorAdminPage:
+    """
+    Registers a custom admin page to display registered Payment Processors.
+
+    It will injects a new fake/dummy model 'Payment Processors' under 'zeitlabs_payments' app
+    to render custom admin page that will show all registered processors from PROCESSORS dict.
+
+    All logic is self-contained and does NOT require a database model.
+    """
+
+    URL_NAME = 'zeitlabs_payments_processors'
+
+    def __init__(self) -> None:
+        """Initilaize patch admin urls and applist."""
+        self._patch_admin_urls()
+        self._patch_app_list()
+
+    def view(self, request: Any) -> HttpResponse:
+        """
+        Render custom admin page and display processors table.
+        """
+        processors_with_path = {
+            slug: {
+                'cls': cls,
+                'name': cls.NAME,
+                'path': f'{cls.__module__}.{cls.__name__}'
+            }
+            for slug, cls in PROCESSORS.items()
+        }
+        context = dict(
+            admin.site.each_context(request),
+            processors=processors_with_path,
+            title='Payment Processors',
+        )
+        return render(request, 'zeitlabs_payments/admin/processors_list.html', context)
+
+    def _patch_admin_urls(self) -> None:
+        """Patch admin urls and add append custom url to it."""
+        original_get_urls = admin.site.get_urls
+
+        def get_urls() -> list:
+            urls = original_get_urls()
+            custom_urls = [
+                path(
+                    'processors/',
+                    admin.site.admin_view(self.view),
+                    name=self.URL_NAME,
+                ),
+            ]
+            return custom_urls + urls
+
+        admin.site.get_urls = get_urls
+
+    def _patch_app_list(self) -> None:
+        """Patch admin apps list and add append custom model 'Payment Processors' under zeitlabs_payments app."""
+        original_get_app_list = admin.site.get_app_list
+
+        def custom_get_app_list(request: Any) -> list:
+            app_list = list(original_get_app_list(request))
+
+            # find the app dict for zeitlabs_payments, if it exists and add custom Processor Link/app
+            zp_app = next((app for app in app_list if app.get('app_label') == 'zeitlabs_payments'), None)
+            if zp_app is not None:
+                models = zp_app.setdefault('models', [])
+                if 'PaymentProcessors' not in [m.get('object_name') for m in models]:
+                    models.append({
+                        'name': 'Payment Processors',
+                        'object_name': 'PaymentProcessors',
+                        'admin_url': reverse(f'admin:{self.URL_NAME}'),
+                        'add_url': None,
+                        'view_only': True,
+                        'perms': {'add': False, 'change': False, 'delete': False, 'view': True},
+                    })
+            return app_list
+
+        admin.site.get_app_list = custom_get_app_list
+
+
+# Instantiate once to register everything
+PaymentProcessorAdminPage()
