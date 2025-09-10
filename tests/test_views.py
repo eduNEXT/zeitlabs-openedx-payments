@@ -202,7 +202,7 @@ class InitiatePaymentViewTest(TestCase):
         self.user = User.objects.get(id=3)
         self.other_user = User.objects.get(id=4)
         self.cart = Cart.objects.create(user=self.user, status=Cart.Status.PENDING)
-        self.provider = 'payfort'
+        self.provider = 'dummy'
         self.url = reverse('zeitlabs_payments:initiate-payment', args=[self.provider, str(self.cart.id)])
 
     def test_redirects_if_not_logged_in(self):

@@ -7,9 +7,19 @@ from common.djangoapps.course_modes.models import CourseMode
 from django.contrib.auth import get_user_model
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
 
+from test_utils.dummy_processor import DummyProcessor
 from zeitlabs_payments.models import CatalogueItem
+from zeitlabs_payments.providers.registry import PROCESSORS
 
 User = get_user_model()
+
+
+@pytest.fixture(autouse=True, scope='session')
+def register_dummy_processor():
+    """Make DummyProcessor globally available for all tests."""
+    PROCESSORS['dummy'] = DummyProcessor
+    yield
+    PROCESSORS.pop('dummy', None)  # cleanup after test session
 
 
 USERS = {
