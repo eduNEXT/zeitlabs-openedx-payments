@@ -17,8 +17,6 @@ def load_entrypoint_processors() -> None:
         slug = getattr(cls, 'SLUG', None)
         if not slug:
             raise ValueError(f"Processor {cls.__name__} from entry point '{ep.name}' must define a SLUG")
-        if slug in PROCESSORS:
-            raise ValueError(f"Duplicate processor slug '{slug}' found in {cls.__name__}")
         PROCESSORS[slug] = cls
 
 

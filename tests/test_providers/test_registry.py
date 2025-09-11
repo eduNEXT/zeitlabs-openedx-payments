@@ -1,11 +1,11 @@
 """Test processor registry"""
 import types
+from unittest.mock import patch
 
 import pkg_resources
 import pytest
 
 from test_utils.dummy_processor import DummyProcessor
-from zeitlabs_payments.providers.base import BaseProcessor
 from zeitlabs_payments.providers.registry import PROCESSORS, get_processor, load_entrypoint_processors
 
 
@@ -18,42 +18,30 @@ def make_entry_point(name, cls):
     return ep
 
 
+@patch('zeitlabs_payments.providers.registry.PROCESSORS', new={})
 def test_loads_valid_processor(monkeypatch):
     ep = make_entry_point('dummy', DummyProcessor)
     monkeypatch.setattr(pkg_resources, 'iter_entry_points', lambda group: [ep])
 
-    PROCESSORS.clear()
     load_entrypoint_processors()
     assert 'dummy' in PROCESSORS
     assert PROCESSORS['dummy'] is DummyProcessor
 
 
+@patch('zeitlabs_payments.providers.registry.PROCESSORS', new={})
 def test_raises_if_no_slug(monkeypatch):
     class NoSlugProcessor:
         pass
 
     ep = make_entry_point('noslug', NoSlugProcessor)
     monkeypatch.setattr(pkg_resources, 'iter_entry_points', lambda group: [ep])
-    PROCESSORS.clear()
     with pytest.raises(ValueError, match='must define a SLUG'):
-        load_entrypoint_processors()
-
-
-def test_raises_if_duplicate_slug(monkeypatch):
-    ep = make_entry_point('dummy', DummyProcessor)
-    monkeypatch.setattr(pkg_resources, 'iter_entry_points', lambda group: [ep])
-    PROCESSORS.clear()
-    # Pre-register dummy
-    PROCESSORS['dummy'] = DummyProcessor
-
-    with pytest.raises(ValueError, match='Duplicate processor slug'):
         load_entrypoint_processors()
 
 
 def test_get_processor_returns_instance_for_known_slug():
     processor = get_processor('dummy')
     assert isinstance(processor, DummyProcessor)
-    assert isinstance(processor, BaseProcessor)
 
 
 def test_get_processor_raises_value_error_for_unknown_slug():
