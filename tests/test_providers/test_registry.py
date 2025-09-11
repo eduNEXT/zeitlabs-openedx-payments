@@ -22,7 +22,6 @@ def make_entry_point(name, cls):
 def test_loads_valid_processor(monkeypatch):
     ep = make_entry_point('dummy', DummyProcessor)
     monkeypatch.setattr(pkg_resources, 'iter_entry_points', lambda group: [ep])
-
     load_entrypoint_processors()
     assert 'dummy' in PROCESSORS
     assert PROCESSORS['dummy'] is DummyProcessor

@@ -1,8 +1,11 @@
 """URLs configuration for testing purposes."""
-from django.urls import include
-from django.urls import path as rpath
+from django.contrib import admin
+from django.urls import include, path
 
 urlpatterns = [
-    # include the urls from the dashboard app using include
-    rpath('', include('zeitlabs_payments.urls'), name='zeitlabs_payments'),
+    # Admin URLs
+    path('admin/', admin.site.urls),
+
+    # Plugin urls
+    path('', include('zeitlabs_payments.urls')),
 ]
