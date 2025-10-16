@@ -106,6 +106,7 @@ class AuditLog(TimeStampedModel):
         RECEIVED_RESPONSE = 'received_gateway_response'
         RESPONSE_INVALID_CART = 'response_for_invalid_cart'
         TRANSACTION_ROLLED_BACK = 'transaction_rolled_back'
+        INVALID_TRANSACTION = 'invalid_transaction'
         CART_STATUS_UPDATED = 'cart_status_updated'
         CART_FULFILLED = 'cart_fulfilled'
 
@@ -129,11 +130,14 @@ class AuditLog(TimeStampedModel):
         AuditActions.BAD_RESPONSE_SIGNATURE: 'Bad response signature detected: {data}.',
         AuditActions.RECEIVED_RESPONSE: 'Received response from payment gateway: {data}.',
         AuditActions.RESPONSE_INVALID_CART: (
-            'Invalid cart state found during success feedback processing. Cart'
+            'Invalid cart state found. Cart'
             'is in state: {cart_status} instead of {required_cart_state}.'
         ),
         AuditActions.TRANSACTION_ROLLED_BACK: (
             'Transaction: {transaction_id} for cart: {cart_id} and site: {site_id} rolled back.'
+        ),
+        AuditActions.INVALID_TRANSACTION: (
+            'Transaction: {transaction_id} is in invalid state: {status}.'
         ),
         AuditActions.CART_STATUS_UPDATED: (
             'Status updated for cart from: {old_status} to: {new_status}.'
@@ -149,7 +153,7 @@ class AuditLog(TimeStampedModel):
     details = models.TextField(blank=True, null=True)
 
     @classmethod
-    def log(cls, *, action: str, context: dict = None, cart: Cart = None, gateway: str = None) -> None:
+    def log(cls, action: str, context: dict = None, cart: Cart = None, gateway: str = None) -> None:
         """
         Create a log entry for a given action, optionally using a template and additional context.
         This method:
