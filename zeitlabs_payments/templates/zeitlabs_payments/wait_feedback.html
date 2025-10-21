@@ -45,7 +45,7 @@
       .then(({ status, data }) => {
         if (status === 200) {
           window.location.href = data.invoice_url;
-        } else if (status === 204) {
+        } else if (status === 202) {
           if (attempts < {{ ecommerce_max_attempts }}) {
             setTimeout(checkStatus, {{ ecommerce_wait_time }});
           } else {
