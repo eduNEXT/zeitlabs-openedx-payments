@@ -1,0 +1,636 @@
+<link href="https://fonts.googleapis.com/css?family=Cairo:200,300,regular,600,700,900&subset=latin,latin-ext&display=swap" rel="stylesheet">
+
+<style>
+@font-face {
+  font-family: 'FontAwesome';
+  src: url("/static/bower_components/fontawesome/fonts/fontawesome-webfont.eot?v=4.3.0&f630bba71b85");
+  src: url("/static/bower_components/fontawesome/fonts/fontawesome-webfont.eot?&f630bba71b85#iefix&v=4.3.0") format("embedded-opentype"),
+       url("/static/bower_components/fontawesome/fonts/fontawesome-webfont.woff2?v=4.3.0&f630bba71b85") format("woff2"),
+       url("/static/bower_components/fontawesome/fonts/fontawesome-webfont.woff?v=4.3.0&f630bba71b85") format("woff"),
+       url("/static/bower_components/fontawesome/fonts/fontawesome-webfont.ttf?v=4.3.0&f630bba71b85") format("truetype"),
+       url("/static/bower_components/fontawesome/fonts/fontawesome-webfont.svg?v=4.3.0&f630bba71b85#fontawesomeregular") format("svg");
+  font-weight: normal;
+  font-style: normal;
+}
+
+.fa {
+  display: inline-block;
+  font: normal normal normal 14px/1 FontAwesome;
+  font-size: inherit;
+  text-rendering: auto;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transform: translate(0, 0);
+}
+
+.fa-exclamation-circle:before {
+  content: "\f06a";
+}
+
+.sr-only,
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.container {
+  margin-right: auto;
+  margin-left: auto;
+  padding-left: 15px;
+  padding-right: 15px;
+  background-color: white;
+}
+
+.container:before,
+.container:after {
+  content: " ";
+  display: table;
+}
+
+.container:after {
+  clear: both;
+}
+
+@media (min-width: 768px) {
+  .container {
+    width: 750px;
+  }
+}
+
+@media (min-width: 992px) {
+  .container {
+    width: 970px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .container {
+    width: 1170px;
+  }
+}
+
+.row {
+  margin-left: -15px;
+  margin-right: -15px;
+}
+
+.row:before,
+.row:after {
+  content: " ";
+  display: table;
+}
+
+.row:after {
+  clear: both;
+}
+
+.col-xs-4,
+.col-xs-8,
+.col-xs-12,
+.col-sm-7,
+.col-sm-12,
+.col-md-2,
+.col-md-5 {
+  position: relative;
+  min-height: 1px;
+  padding-left: 15px;
+  padding-right: 15px;
+}
+
+.col-xs-4,
+.col-xs-8,
+.col-xs-12 {
+  float: left;
+}
+
+.col-xs-4 {
+  width: 33.33333%;
+}
+
+.col-xs-8 {
+  width: 66.66667%;
+}
+
+.col-xs-12 {
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .col-sm-7,
+  .col-sm-12 {
+    float: left;
+  }
+
+  .col-sm-7 {
+    width: 58.33333%;
+  }
+
+  .col-sm-12 {
+    width: 100%;
+  }
+}
+
+@media (min-width: 992px) {
+  .col-md-2,
+  .col-md-5 {
+    float: left;
+  }
+
+  .col-md-2 {
+    width: 16.66667%;
+  }
+
+  .col-md-5 {
+    width: 41.66667%;
+  }
+}
+
+.pull-left {
+  float: left !important;
+}
+
+.pull-right {
+  float: right !important;
+}
+
+.thumbnail {
+  display: block;
+  padding: 4px;
+  margin-bottom: 20px;
+  line-height: 1.42857;
+  background-color: #fafafa;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  -webkit-transition: border 0.2s ease-in-out;
+  -o-transition: border 0.2s ease-in-out;
+  transition: border 0.2s ease-in-out;
+}
+
+.btn {
+  display: inline-block;
+  margin-bottom: 0;
+  font-weight: normal;
+  text-align: center;
+  vertical-align: middle;
+  touch-action: manipulation;
+  cursor: pointer;
+  background-image: none;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  padding: 6px 12px;
+  font-size: 14px;
+  line-height: 1.42857;
+  border-radius: 3px;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+.btn-default {
+  color: #333;
+  background-color: #fff;
+  border-color: #ccc;
+  border-radius: 6px;
+}
+
+.depth {
+  padding: 1.25rem 1.25rem;
+}
+
+.depth-2 {
+  background: #fcfcfc;
+  box-shadow: 0 1px 2px 1px rgba(167, 164, 164, 0.25);
+}
+
+.message-error-content {
+  border-top: 4px solid #B20610;
+}
+
+.message-error-content h3 {
+  margin-bottom: 10px;
+  font-weight: bold;
+}
+
+.basket .container {
+  padding: 25px 20px 30px 20px;
+}
+
+.basket .container .basket-items {
+  margin-top: 20px;
+  border-bottom: 1px solid #ddd;
+}
+
+.basket .container .basket-items .row {
+  padding-bottom: 30px;
+}
+
+.basket .container .basket-items .row .product-title,
+.basket .container .basket-items .row .old-price,
+.basket .container .basket-items .row .price {
+  margin: 0;
+  font-size: 20px;
+}
+
+.basket .container .basket-items .row .old-price,
+.basket .container .basket-items .row .price {
+  font-weight: bold;
+}
+
+.basket .container .basket-items .row .product-description {
+  font-size: 14px;
+}
+
+.basket .container .basket-items .row .product-prices {
+  text-align: right;
+}
+
+.basket .container .basket-items .row .product-image img {
+  margin: 0 auto;
+  width: 100%;
+}
+
+.basket .container .basket-items .row .price {
+  padding: 0 0 0 15px;
+}
+
+.basket .container .total {
+  padding-top: 20px;
+  margin-bottom: 1.25rem;
+}
+
+.basket .container .total .use-voucher {
+  float: left;
+}
+
+.basket .container .total .use-voucher p {
+  margin: 0;
+  color: gray;
+}
+
+.basket .container .total .use-voucher #id_code {
+  border: 1px solid #c8c8c8;
+  border-radius: 4px;
+  padding: 4.5px 12px;
+}
+
+.basket .container .total #basket_totals {
+  text-align: right;
+  color: #43B666;
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.basket .container .total #voucher_form_container {
+  display: none;
+}
+
+.basket .container .payment-buttons .payment-button,
+.basket #apply-voucher-button {
+  border: 1px solid #43B666 !important;
+  border-radius: 3px;
+  background-color: #43B666 !important;
+  color: #fff !important;
+}
+
+.basket .container .payment-buttons .payment-button {
+  padding: 1.25rem 1.875rem;
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.basket .container .payment-buttons .payment-button:hover,
+.basket .container .payment-buttons .payment-button:active,
+.basket .container .payment-buttons .payment-button:focus,
+.basket #apply-voucher-button:hover,
+.basket #apply-voucher-button:active,
+.basket #apply-voucher-button:focus {
+  border: 1px solid #43B666 !important;
+  background-color: #43B666 !important;
+  color: #fff;
+}
+
+.basket .container .verification-note {
+  margin-top: 20px;
+}
+
+.basket .container .help {
+  margin-top: 20px;
+}
+
+.receipt {
+  margin-bottom: 20px;
+  padding-top: 20px;
+  background-color: #ffffff;
+  font-family: "Cairo";
+  line-height: 1em;
+}
+
+.receipt .content-container {
+  padding: 15px 30px 40px;
+}
+
+.receipt .receipt-header {
+  display: flex;
+}
+
+.receipt .receipt-header h2 {
+  font-size: 2rem;
+}
+
+.receipt .receipt-header .navbar-brand-logo {
+  height: 2rem;
+  margin-top: 20px;
+  margin-left: auto;
+}
+
+.receipt h2,
+.receipt .order-headers {
+  margin-bottom: 10px;
+  color: #43B666 !important;
+  font-size: 22px;
+}
+
+.receipt p {
+  margin-top: 5px;
+}
+
+.receipt .info-item {
+  overflow: hidden;
+}
+
+.receipt .payment-info {
+  margin: 0;
+}
+
+.receipt .payment-info dl {
+  display: flex;
+  flex-direction: column;
+}
+
+.receipt .payment-info dl .order-summary-item {
+  display: ruby;
+}
+
+.receipt .order-summary dt {
+  font-weight: 500;
+}
+
+.receipt .order-summary dd {
+  margin-bottom: 20px;
+  color: #1d1d1d;
+  font-size: 18px;
+}
+
+.receipt .table dl {
+  margin: 0;
+}
+
+.receipt .table .header {
+  background-color: #f9f9f9;
+}
+
+.receipt .table .header dt {
+  border-bottom: 2px solid #ebebeb;
+  font-size: 16px;
+  width: 10%;
+}
+
+.receipt .table .header dt:first-child {
+  width: 24%;
+}
+
+.receipt .table .header dt:nth-child(2) {
+  width: 46%;
+}
+
+.receipt .table .header dt:last-child {
+  width: 10%;
+}
+
+.receipt .table .header dt,
+.receipt .table .header dd,
+.receipt .table .order-line-data dt,
+.receipt .table .order-line-data dd {
+  padding: 10px 10px 5px 10px;
+}
+
+.receipt .table .order-line-data {
+  display: flex;
+}
+
+.receipt .table .order-line-data:not(:last-child) {
+  border-bottom: 2px solid #ebebeb;
+}
+
+.receipt .table .order-line-data:last-child {
+  border-bottom: 4px solid;
+}
+
+.receipt .table .order-line-data dd {
+  font-size: 16px;
+}
+
+.receipt .table .order-line-data .product-description-container {
+  width: 70%;
+}
+
+.receipt .table .order-line-data .product-description-container dd:nth-child(2) {
+  width: 34.3%;
+}
+
+.receipt .table .order-line-data .product-description-container dd:nth-child(4) {
+  width: 65.7%;
+  border-right: 2px solid #ebebeb;
+}
+
+.receipt .table .order-line-data .product-data-container {
+  width: 30%;
+}
+
+.receipt .table .order-line-data .product-data-container dd {
+  width: 33.33%;
+}
+
+.receipt .table .order-line-data dd.line-price {
+  padding: 10px 10px 5px 10px;
+  text-align: center;
+}
+
+.receipt .table .order-line-data dd.line-vat {
+  text-align: center;
+}
+
+.receipt .table .order-line-data dd.line-total {
+  text-align: center;
+}
+
+.receipt .table .order-line-data .price {
+  font-weight: normal;
+}
+
+.receipt .table .order-line-data .total {
+  font-weight: bold;
+}
+
+.receipt .table .total-container {
+  display: flex;
+}
+
+.receipt .table .total-container .order-totals {
+  margin-right: auto;
+  width: 50%;
+}
+
+.receipt .table .total-container .order-totals .order-total {
+  margin-left: 0;
+}
+
+.receipt .table .order-total {
+  margin-left: 50%;
+  padding: 20px 0;
+}
+
+.receipt .table .order-total .description {
+  width: 62.5%;
+  font-weight: bold;
+  display: inline-block;
+}
+
+.receipt .table .order-total .description p {
+  padding-top: 5px;
+  font-size: 15px;
+  font-weight: normal;
+}
+
+.receipt .table .order-total .description .discount {
+  line-height: 1.5em;
+}
+
+.receipt .table .order-total .price {
+  display: inline-block;
+  float: right;
+  margin-right: 10%;
+  color: black;
+}
+
+.receipt .price {
+  padding-right: 0;
+  font-size: 16px;
+  font-weight: bold;
+  text-align: right;
+}
+
+.print-receipt-button {
+  color: #43B666;
+  border: 1px solid;
+  margin: 5px 0 5px 0;
+  border-radius: 5px;
+  padding: 10px;
+  background: none;
+}
+
+.receipt .print-receipt-button:hover {
+  color: white;
+  background-color: #43B666;
+}
+
+@media (max-width: 991px) {
+  .receipt .sr {
+    position: static;
+    width: auto;
+    height: auto;
+    font-size: 16px;
+  }
+
+  .receipt .order-summary {
+    border-top: 2px solid #ebebeb;
+    border-bottom: 2px solid #ebebeb;
+    padding: 10px 0;
+    background-color: #f9f9f9;
+  }
+
+  .receipt .order-summary dt,
+  .receipt .order-summary dd {
+    padding-left: 10px;
+    font-size: 16px;
+  }
+
+  .receipt .order-summary dt {
+    float: left;
+    color: black;
+    font-weight: bold;
+  }
+
+  .receipt .order-summary dd {
+    display: flex;
+  }
+
+  .receipt .table {
+    border-top: 4px solid #ebebeb;
+  }
+
+  .receipt .table .header {
+    display: none;
+  }
+
+  .receipt .table .order-line-data {
+    padding-top: 10px;
+  }
+
+  .receipt .table .order-line-data:not(:last-child) {
+    border-bottom: none;
+  }
+
+  .receipt .table .order-line-data:last-child {
+    border-bottom: 2px solid;
+  }
+
+  .receipt .table .order-line-data dd {
+    display: inline-block;
+    height: auto;
+  }
+
+  .receipt .table .order-line-data .product-description-container {
+    width: 60%;
+  }
+
+  .receipt .table .order-line-data .product-description-container dd:nth-child(2),
+  .receipt .table .order-line-data .product-description-container dd:nth-child(4) {
+    width: 100%;
+    border-right: none;
+  }
+
+  .receipt .table .order-line-data .product-data-container {
+    width: 40%;
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .receipt .table .order-line-data .product-data-container dd {
+    width: 40%;
+    padding-top: 0;
+    margin-right: 0;
+  }
+
+  .receipt .table .order-line-data .product-data-container dt {
+    width: 60%;
+    padding-top: 0;
+  }
+
+  .receipt .table .order-total {
+    margin-left: 0;
+    padding: 20px 10px;
+  }
+
+  .receipt .table .order-total .price {
+    margin-right: 0;
+  }
+}
+</style>

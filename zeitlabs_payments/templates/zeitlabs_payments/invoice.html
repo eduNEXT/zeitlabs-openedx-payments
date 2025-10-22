@@ -17,9 +17,9 @@
 
 
 {% block body %}
-<link rel="stylesheet" href="https://srei.ecommerce.futurex.sa/static/CACHE/css/main.643ebe9aca4b.css" type="text/css">
+{% include "zeitlabs_payments/styles.html" %}
 
-<div id="receipt-container" dir="ltr" class="receipt container content-container" data-currency="{{ currency }}" data-order-id="{{ invoice.invoice_number}}" data-total-amount="{{ invoice.total }}" data-back-button="1"> 
+<div id="receipt-container" dir="ltr" class="receipt container content-container" data-currency="{{ currency }}" data-order-id="{{ invoice.invoice_number}}" data-total-amount="{{ invoice.total }}" data-back-button="1">
   <div id="messages"></div>
   <div class="receipt-header">
     <h2 class="receipt">Invoice</h2>
@@ -97,7 +97,7 @@
                 <dd class="line-total total">{{ invoice_item.price }} {{ currency }}</dd>
               </div>
             </div>
-          {% endfor %}        
+          {% endfor %}
         </dl>
         <div class="total-container">
           <div class="order-totals">
@@ -116,8 +116,8 @@
           </div>
           {% generate_invoice_qr_code invoice.invoice_number %}
         </div>
-        
-    </div>          
+
+    </div>
   </div>
   <button class="print-receipt-button" onclick="window.print()">{% trans "Print Receipt" as tmsg %}{{ tmsg | force_escape }}</button>
 </div>
