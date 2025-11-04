@@ -72,8 +72,8 @@ class CartViewTest(BaseTestViewMixin):
         self.login_user(user)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        assert response.data['user'] is None, 'Expected "user" to be None since there is no existing cart'
-        assert response.data['status'] is None, 'Expected "status" to be None since there is no existing cart'
+
+        assert response.data['details'] == f'No pending cart found for user: {user}'
         user_cart = Cart.objects.create(user=user, status=Cart.Status.PENDING)
         user_cart.items.create(
             catalogue_item=course_item,
@@ -94,12 +94,7 @@ class CartViewTest(BaseTestViewMixin):
 
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        assert response.data['user'] is None, (
-            'Expected "user" to be None since there is no existing cart with pending state'
-        )
-        assert response.data['status'] is None, (
-            'Expected "status" to be None since there is no existing cart with pending state'
-        )
+        assert response.data['details'] == f'No pending cart found for user: {user}'
 
     def test_post_success(self):
         """

@@ -6,9 +6,17 @@ from openedx.core.djangoapps.content.course_overviews.models import CourseOvervi
 from rest_framework import serializers
 
 from zeitlabs_payments.helpers import get_currency, relative_url_to_absolute_url
-from zeitlabs_payments.models import Cart, CartItem, CatalogueItem
+from zeitlabs_payments.models import Cart, CartItem, Invoice
 
 logger = logging.getLogger(__name__)
+
+
+class InvoiceSerializer(serializers.ModelSerializer):
+    """Invoice serializer."""
+
+    class Meta:
+        model = Invoice
+        fields = ['invoice_number', 'currency', 'paid_at']
 
 
 class CourseSerializer(serializers.ModelSerializer):
@@ -81,9 +89,9 @@ class CartItemSerializer(serializers.ModelSerializer):
     sku = serializers.SerializerMethodField()
     type = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
-    courses = serializers.SerializerMethodField()
     title = serializers.SerializerMethodField()
     description = serializers.SerializerMethodField()
+    details = serializers.SerializerMethodField()
 
     class Meta:
         model = CartItem
@@ -97,7 +105,7 @@ class CartItemSerializer(serializers.ModelSerializer):
             'discount_amount',
             'final_price',
             'coupon',
-            'courses',
+            'details',
         ]
 
     def get_sku(self, obj: CartItem) -> str:
@@ -145,25 +153,36 @@ class CartItemSerializer(serializers.ModelSerializer):
         """
         return obj.catalogue_item.description
 
-    def get_courses(self, obj: CartItem) -> List[Any]:
+    def get_details(self, obj: CartItem) -> Any:
         """
-        Return a list of serialized courses if the item type is PAID_COURSE.
+        Return item-specific details based on its type.
+        """
+        item_type = obj.catalogue_item.type
+        handler_method = getattr(self, f'_get_{item_type}_details', None)
 
-        :param obj: CartItem instance
-        :return: List of serialized course data
-        """
-        courses = []
-        if obj.catalogue_item.type == CatalogueItem.ItemType.PAID_COURSE:
-            try:
-                courses = [CourseOverview.objects.get(id=obj.catalogue_item.item_ref_id)]
-                return CourseSerializer(instance=courses, many=True, context=self.context).data
-            except CourseOverview.DoesNotExist as exc:
-                logger.warning(f'CourseOverview not found for id {obj.catalogue_item.item_ref_id}')
-                raise Exception(
-                    f'Catalogue item of type: {CatalogueItem.ItemType.PAID_COURSE:} must be linked with course_id.'
-                ) from exc
-        else:
-            raise Exception('Unsupported catalogue item type.')
+        if callable(handler_method):
+            return handler_method(obj)  # pylint: disable=not-callable
+
+        logger.warning(f"No handler implemented for item type '{item_type}'. Returning empty details.")
+        return {}
+
+    def _get_paid_course_details(self, obj: CartItem) -> dict:
+        """Return details for a single paid course item."""
+        item_ref_id = obj.catalogue_item.item_ref_id
+        courses_map = self.context.get('prefetched_courses', {})
+
+        course = (
+            courses_map.get(str(item_ref_id))
+            if courses_map
+            else CourseOverview.objects.filter(id=item_ref_id).first()
+        )
+        if not course:
+            logger.warning(f'CourseOverview not found for id {item_ref_id}')
+            return {'courses': []}
+
+        return {
+            'courses': CourseSerializer([course], many=True, context=self.context).data
+        }
 
 
 class CartSerializer(serializers.ModelSerializer):
@@ -171,10 +190,18 @@ class CartSerializer(serializers.ModelSerializer):
 
     items = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
+    invoice = serializers.SerializerMethodField()
+    user = serializers.SerializerMethodField()
 
     class Meta:
         model = Cart
-        fields = ['id', 'user', 'status', 'created_at', 'items', 'total', 'currency']
+        fields = ['id', 'user', 'status', 'created_at', 'items', 'total', 'currency', 'invoice']
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize serializer and remove invoice from fields if not required."""
+        super().__init__(*args, **kwargs)
+        if not self.context.get('include_invoice'):
+            self.fields.pop('invoice', None)
 
     def get_items(self, obj: Cart) -> List[Any]:
         """
@@ -194,3 +221,31 @@ class CartSerializer(serializers.ModelSerializer):
         :return: currency str
         """
         return get_currency(obj)
+
+    def get_invoice(self, obj: Cart) -> dict | None:
+        """
+        Return serialized invoice. Invoice is only return if include_invoice is send in context.
+
+        :param obj: Cart instance
+        :return: Serialized invoice data
+        """
+        if not self.context.get('include_invoice', False) or obj.status != Cart.Status.PAID:
+            return None
+
+        invoice = obj.invoices.filter(status=Invoice.InvoiceStatus.PAID).first()
+        return InvoiceSerializer(invoice).data if invoice else None
+
+    def get_user(self, obj: Cart) -> dict | None:
+        """
+        Return user details or just the user ID based on include_user flag.
+        """
+        if not self.context.get('include_user_details', False):
+            return obj.user_id
+
+        user = obj.user
+        return {
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'full_name': user.get_full_name(),
+        }

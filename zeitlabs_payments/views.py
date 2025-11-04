@@ -171,10 +171,14 @@ class CartView(APIView):
         last_pending_cart = models.Cart.objects.filter(
             user=request.user, status=models.Cart.Status.PENDING
         ).order_by('-created_at').first()
-
+        if last_pending_cart:
+            serializer = CartSerializer(last_pending_cart, context={'request': request})
+            data = serializer.data
+        else:
+            data = {'details': f'No pending cart found for user: {request.user}'}
         serializer = CartSerializer(last_pending_cart, context={'request': request})
         logger.debug(f'Retrieved last pending cart for user {request.user}: {last_pending_cart}')
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(data, status=status.HTTP_200_OK)
 
     def post(self, request: Any) -> Response:
         """
