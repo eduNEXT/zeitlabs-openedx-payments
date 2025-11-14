@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from zeitlabs_payments.models import AuditLog, Cart, Coupon, CouponUsage, TaxRule
+from zeitlabs_payments.models import AuditLog, Cart, CatalogueItem, Coupon, CouponUsage, TaxRule
 
 User = get_user_model()
 
@@ -170,3 +170,32 @@ def test_usage_count_sums_correctly():
     CouponUsage.objects.create(coupon=coupon, user=user1, count=3)
     CouponUsage.objects.create(coupon=coupon, user=user2, count=2)
     assert coupon.usage_count == 5
+
+
+@pytest.mark.django_db
+def test_valid_statuses_returns_all_choices():
+    """Test that Cart.valid_statuses() returns all defined status values."""
+    expected_statuses = [
+        Cart.Status.PENDING,
+        Cart.Status.PROCESSING,
+        Cart.Status.PAID,
+        Cart.Status.CANCELLED,
+        Cart.Status.REFUND_REQUESTED,
+        Cart.Status.REFUNDED,
+    ]
+    result = Cart.valid_statuses()
+    assert result == expected_statuses
+    assert len(result) == len(set(result))
+    assert all(status in dict(Cart.Status.choices) for status in result)
+
+
+@pytest.mark.django_db
+def test_valid_item_types_returns_all_choices():
+    """Test that CatalogueItem.valid_item_types() returns all defined item type values."""
+    expected_item_types = [
+        CatalogueItem.ItemType.PAID_COURSE,
+    ]
+    result = CatalogueItem.valid_item_types()
+    assert result == expected_item_types
+    assert len(result) == len(set(result))
+    assert all(item_type in dict(CatalogueItem.ItemType.choices) for item_type in result)

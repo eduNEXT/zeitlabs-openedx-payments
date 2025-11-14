@@ -14,7 +14,7 @@
             {% if cart %}
                <form action="." method="post">
                   {% for item in cart.items %}
-                     {% for course in item.courses %}
+                     {% for course in item.details.courses %}
                      <div class="basket-items">
                         <p class="certificate_type">
                               Earn a valuable certificate to showcase the skills you learn in

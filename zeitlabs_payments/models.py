@@ -56,6 +56,11 @@ class Cart(TimeStampedModel):
         """Calculate raw total before appling any discount and tax."""
         return sum(item.original_price for item in self.items.all())
 
+    @classmethod
+    def valid_statuses(cls) -> list[str]:
+        """Return all valid status values."""
+        return [choice[0] for choice in cls.Status.choices]
+
 
 class Transaction(TimeStampedModel):
     """Transaction model."""
@@ -235,6 +240,11 @@ class CatalogueItem(TimeStampedModel):
     item_ref_id = models.CharField(max_length=255)
     price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
     currency = models.CharField(max_length=3, blank=True, null=True)
+
+    @classmethod
+    def valid_item_types(cls) -> list[str]:
+        """Return all valid status values."""
+        return [choice[0] for choice in cls.ItemType.choices]
 
 
 class CartItem(TimeStampedModel):
