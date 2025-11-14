@@ -172,3 +172,168 @@ def test_fulfill_cart_for_missing_cart_handler(cart):  # pylint: disable=redefin
         action=AuditLog.AuditActions.CART_FULFILLMENT_ERROR, cart=cart
     ).exists(), \
         'Audit log should exist with cart fullfillment error as cart handler is missing for catalog item'
+
+
+@pytest.mark.django_db
+def test_process_payment_success(cart):  # pylint: disable=redefined-outer-name
+    """Test full successful payment, invoice, and fulfillment flow."""
+    processor = DummyProcessor()
+    request = MagicMock()
+    request.user = cart.user
+    transaction_id = '12345'
+
+    assert not Transaction.objects.filter(gateway='dummy', cart=cart).exists(), \
+        'Transaction should not exist before test'
+    assert cart.status == cart.Status.PROCESSING, \
+        'Cart should be in PROCESSING state'
+
+    invoice = processor.process_payment_and_update_records(
+        cart=cart,
+        data={'response': 'ok'},
+        request=request,
+        transaction_id=transaction_id,
+        transaction_status='SUCCESS',
+        method='card',
+        amount=100.00,
+        currency='SAR',
+        reason='Payment completed',
+        site_id=1
+    )
+
+    cart.refresh_from_db()
+    assert cart.status == cart.Status.PAID, \
+        'Cart status should be PAID after successful payment'
+
+    assert invoice.cart.id == cart.id
+    assert invoice.gross_total == cart.gross_total
+    assert invoice.discount_total == cart.discount_total
+    assert invoice.tax_total == cart.tax_total
+    assert invoice.total == cart.total
+    assert invoice.related_transaction.gateway_transaction_id == '12345'
+
+
+@pytest.mark.django_db
+def test_process_payment_invalid_cart_status(cart):  # pylint: disable=redefined-outer-name
+    """Test when cart is not in PROCESSING state."""
+    processor = DummyProcessor()
+    cart.status = Cart.Status.PENDING
+    cart.save()
+
+    assert not AuditLog.objects.filter(
+        gateway='dummy', cart=cart, action=AuditLog.AuditActions.RESPONSE_INVALID_CART
+    ).exists(), \
+        'AuditLog should not exist before test'
+
+    result = processor.process_payment_and_update_records(
+        cart=cart,
+        data={},
+        request=MagicMock(),
+        transaction_id='t1',
+        transaction_status='SUCCESS',
+        method='card',
+        amount='10',
+        currency='USD',
+        reason='ok'
+    )
+
+    assert result is None
+    audit_log = AuditLog.objects.filter(
+        gateway='dummy', cart=cart, action=AuditLog.AuditActions.RESPONSE_INVALID_CART
+    )[0]
+    assert audit_log.details == 'Invalid cart state found. Cart is in state: pending instead of processing.'
+
+
+@pytest.mark.django_db
+def test_process_payment_duplicate_transaction(cart):  # pylint: disable=redefined-outer-name
+    """Test DuplicateTransactionError handling."""
+    processor = DummyProcessor()
+    transaction_id = '12345'
+
+    Transaction.objects.create(
+        gateway_transaction_id=transaction_id,
+        gateway='dummy',
+        amount=5000,
+    )
+
+    assert not AuditLog.objects.filter(
+        gateway='dummy', cart=cart, action=AuditLog.AuditActions.DUPLICATE_TRANSACTION
+    ).exists(), \
+        'AuditLog should not exist before test'
+
+    result = processor.process_payment_and_update_records(
+        cart=cart,
+        data={},
+        request=MagicMock(),
+        transaction_id=transaction_id,
+        transaction_status='SUCCESS',
+        method='card',
+        amount='10',
+        currency='USD',
+        reason='ok'
+    )
+
+    assert result is None
+
+    audit_log = AuditLog.objects.filter(
+        gateway='dummy', cart=cart, action=AuditLog.AuditActions.DUPLICATE_TRANSACTION
+    )[0]
+    assert audit_log.details == 'Transaction with id: 12345 already existed. Cart has status: processing.'
+
+
+@pytest.mark.django_db
+@patch('zeitlabs_payments.providers.base.BaseProcessor.handle_payment')
+def test_process_payment_handle_payment_exception(mock_handle_payment, cart):  # pylint: disable=redefined-outer-name
+    """Test generic exception in handle_payment branch."""
+    processor = DummyProcessor()
+    mock_handle_payment.side_effect = Exception('unexpected')
+    assert not AuditLog.objects.filter(
+        gateway='dummy', cart=cart, action=AuditLog.AuditActions.TRANSACTION_ROLLED_BACK
+    ).exists(), \
+        'AuditLog should not exist before test'
+
+    result = processor.process_payment_and_update_records(
+        cart=cart,
+        data={},
+        request=MagicMock(),
+        transaction_id='t3',
+        transaction_status='FAILED',
+        method='card',
+        amount='10',
+        currency='USD',
+        reason='error'
+    )
+
+    assert result is None
+    assert AuditLog.objects.filter(
+        gateway='dummy', cart=cart, action=AuditLog.AuditActions.TRANSACTION_ROLLED_BACK
+    ).exists()
+    assert not Transaction.objects.filter(
+        gateway='dummy', gateway_transaction_id='t3',
+    ).exists()
+
+
+@pytest.mark.django_db
+@patch('zeitlabs_payments.providers.base.CART_HANDLER', new={})
+@patch('zeitlabs_payments.providers.base.logger.exception')
+def test_process_payment_invoice_or_fulfillment_fails(mock_exc, cart):  # pylint: disable=redefined-outer-name
+    """Test when invoice creation or fulfillment raises exception."""
+    processor = DummyProcessor()
+
+    request = MagicMock()
+    request.user = cart.user
+
+    result = processor.process_payment_and_update_records(
+        cart=cart,
+        data={},
+        request=request,
+        transaction_id='t4',
+        transaction_status='SUCCESS',
+        method='card',
+        amount='10',
+        currency='SAR',
+        reason='ok'
+    )
+    assert result is None
+    mock_exc.assert_called_once_with(
+        'Failed to fulfill cart 1 or to create invoice: Unsupported catalogue item type: paid_course'
+    )

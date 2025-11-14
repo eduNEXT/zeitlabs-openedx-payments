@@ -135,7 +135,7 @@ class AuditLog(TimeStampedModel):
         AuditActions.BAD_RESPONSE_SIGNATURE: 'Bad response signature detected: {data}.',
         AuditActions.RECEIVED_RESPONSE: 'Received response from payment gateway: {data}.',
         AuditActions.RESPONSE_INVALID_CART: (
-            'Invalid cart state found. Cart'
+            'Invalid cart state found. Cart '
             'is in state: {cart_status} instead of {required_cart_state}.'
         ),
         AuditActions.TRANSACTION_ROLLED_BACK: (

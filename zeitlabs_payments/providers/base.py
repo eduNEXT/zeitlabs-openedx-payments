@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from django.contrib.auth import get_user_model
 from django.contrib.sites.models import Site
+from django.db import transaction as db_transaction
 from django.http import HttpRequest, HttpResponse
 from django.urls import reverse
 from django.utils import timezone
@@ -272,3 +273,103 @@ class BaseProcessor:
                 raise CartFulfillmentError(f'Unsupported catalogue item type: {item.catalogue_item.type}')
 
             handler.fulfill(item, self.SLUG)
+
+    def process_payment_and_update_records(  # pylint: disable= too-many-positional-arguments
+        self,
+        cart: Cart,
+        data: dict,
+        request: Any,
+        transaction_id: str,
+        transaction_status: str,
+        method: str,
+        amount: str,
+        currency: str,
+        reason: str,
+        site_id: Optional[int] = None,
+        record_webhook_event: bool = True,
+    ) -> Optional[Invoice]:
+        """
+        Generic method to handle payment, invoice creation, and fulfillment.
+
+        :param cart: Cart instance
+        :param data: Raw payment data from gateway
+        :param request: Django request object
+        :param transaction_id: Gateway transaction ID
+        :param transaction_status: Payment status string
+        :param method: Payment method used
+        :param amount: Transaction amount
+        :param currency: Currency code
+        :param reason: Gateway-provided reason/description
+        :param site_id: Optional site ID for context logging
+        :param record_webhook_event: Whether to record webhook payload
+        :return: Created Invoice instance or None
+        """
+        if cart.status != Cart.Status.PROCESSING:
+            AuditLog.log(
+                action=AuditLog.AuditActions.RESPONSE_INVALID_CART,
+                cart=cart,
+                gateway=self.SLUG,
+                context={'cart_status': cart.status, 'required_cart_state': Cart.Status.PROCESSING}
+            )
+            logger.warning(f'Cart {cart.id} in invalid status: {cart.status} (expected: PROCESSING).')
+            return None
+
+        try:
+            with db_transaction.atomic():
+                logger.info(f'Recording payment transaction for cart {cart.id}.')
+                transaction_record = self.handle_payment(
+                    cart=cart,
+                    user=request.user if hasattr(request, 'user') and request.user.is_authenticated else None,
+                    transaction_status=transaction_status,
+                    transaction_id=transaction_id,
+                    method=method,
+                    amount=amount,
+                    currency=currency,
+                    reason=reason,
+                    response=data,
+                    record_webhook_event=record_webhook_event,
+                )
+
+        except DuplicateTransactionError:
+            AuditLog.log(
+                action=AuditLog.AuditActions.DUPLICATE_TRANSACTION,
+                cart=cart,
+                gateway=self.SLUG,
+                context={
+                    'transaction_id': transaction_id,
+                    'cart_status': cart.status,
+                },
+            )
+            logger.warning(f'Duplicate transaction for cart {cart.id}, ID {transaction_id}')
+            return None
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            AuditLog.log(
+                action=AuditLog.AuditActions.TRANSACTION_ROLLED_BACK,
+                cart=cart,
+                gateway=self.SLUG,
+                context={
+                    'transaction_id': transaction_id,
+                    'cart_id': cart.id,
+                    'site_id': site_id,
+                },
+            )
+            logger.exception(f'Payment transaction failed and rolled back for cart {cart.id}: {e}')
+            return None
+
+        try:
+            cart.refresh_from_db()
+            invoice = self.create_invoice(cart, request, transaction_record)
+            self.fulfill_cart(cart)
+            AuditLog.log(
+                action=AuditLog.AuditActions.CART_FULFILLED,
+                cart=cart,
+                gateway=self.SLUG,
+                context={},
+            )
+            logger.info(f'Successfully fulfilled cart {cart.id} and created invoice {invoice.id}.')
+            return invoice
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.exception(f'Failed to fulfill cart {cart.id} or to create invoice: {e}')
+            return None
