@@ -82,7 +82,7 @@ class BaseProcessor:
         return {
             'language': get_language(request),
             'order_reference': get_merchant_reference(request.site.id, cart),
-            'amount': int(round(cart.total * 100, 0)),
+            'amount': int(round(cart.total, 0)),
             'currency': get_currency(cart),
             'user_email': cart.user.email,
             'order_description': get_order_description(cart),
