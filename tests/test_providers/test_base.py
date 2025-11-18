@@ -105,7 +105,7 @@ def test_get_transaction_parameters_base(cart):  # pylint: disable=redefined-out
     result = processor.get_transaction_parameters_base(cart, request)
     assert result['user_email'] == 'user3@example.com'
     assert result['language'] == 'en'
-    assert result['amount'] == 5000
+    assert result['amount'] == int(cart.total)
     assert result['order_reference'] == f'{cart.id}-{request.site.id}'
     assert result['currency'] == cart.items.all()[0].catalogue_item.currency
 
@@ -116,10 +116,10 @@ def test_handle_payment_for_duplicate_transaction(cart):  # pylint: disable=rede
     Transaction.objects.create(
         gateway_transaction_id='already-there',
         gateway='dummy',
-        amount=5000,
+        amount=500,
     )
     with pytest.raises(DuplicateTransactionError):
-        processor.handle_payment(cart, cart.user, 'anything', 'already-there', 'dummy', '5000', 'usd', 'any reason')
+        processor.handle_payment(cart, cart.user, 'anything', 'already-there', 'dummy', '500', 'usd', 'any reason')
 
 
 @pytest.mark.django_db
