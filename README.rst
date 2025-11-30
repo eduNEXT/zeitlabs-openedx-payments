@@ -23,7 +23,7 @@ There's more than one option for payment in Open edX. Most have their own flaws,
      - **WooCommerce**
      - **Saleor**
    * - URL
-     - https://github.com/zeit-labs/zeitlabs-payments/  
+     - https://github.com/zeit-labs/zeitlabs-payments/
        Supported for all Open edX releases starting from Redwood
      - https://github.com/openedx/unsupported/ecommerce (Deprecated)
      - https://github.com/openedx/openedx-wordpress-ecommerce
@@ -162,7 +162,7 @@ Add the app to the Open edX platform in Tutor development mode
 
    tutor dev stop;
    tutor dev start -d;
-   
+
 
 4. Install the app:
 
@@ -245,10 +245,10 @@ Convert course to a Paid Course
 ===============================
 
 1. Create an **edX course mode** and set SKU and price  from django Admin.
-2. Create a **Catalogue Item** in ``zeitlabs_payments`` with the same SKU and price, and add the course ID as ``item_ref_id``.  
-3. Try to **enroll or upgrade** a course. It should redirect to the checkout page where the learner can see the **Pay with Payfort** button.  
-4. After payment, the user will be redirected back to the platform’s **invoice page**, and their enrollment status will be updated.  
-5. Check the **Audit Logs** table in case of failures or to review responses from the payment gateway.  
+2. Create a **Catalogue Item** in ``zeitlabs_payments`` with the same SKU and price, and add the course ID as ``item_ref_id``.
+3. Try to **enroll or upgrade** a course. It should redirect to the checkout page where the learner can see the **Pay with Payfort** button.
+4. After payment, the user will be redirected back to the platform’s **invoice page**, and their enrollment status will be updated.
+5. Check the **Audit Logs** table in case of failures or to review responses from the payment gateway.
 
 
 Run Tests
@@ -274,11 +274,20 @@ Run Tests
 
       tox -e py311-django42
 
+Make Migrations
+***************
+
+If you make changes to the models, you can create new migrations with the following command:
+
+.. code-block:: bash
+
+   tox -e makemigrations
+
 Extending Zeitlabs Payments
 ***************************
 
-Zeitlabs Payments is designed to be **pluggable and extensible**.  
-Adding a new payment processor or gateway is straightforward, thanks to the built-in `BaseProcessor` class.  
+Zeitlabs Payments is designed to be **pluggable and extensible**.
+Adding a new payment processor or gateway is straightforward, thanks to the built-in `BaseProcessor` class.
 
 The `BaseProcessor` already includes all the core functionality you need:
 - Cart handling
@@ -310,7 +319,7 @@ Zeitlabs Payments will automatically discover and load all processors defined un
 Reference Implementation
 ========================
 
-We have already built a working PayFort plugin, which you can use as a reference to create your own gateway:  
+We have already built a working PayFort plugin, which you can use as a reference to create your own gateway:
 https://github.com/zeit-labs/zeitlabs-payfort
 
 Use it as a **starting point** when building your own payment gateway integration.
@@ -318,7 +327,7 @@ Use it as a **starting point** when building your own payment gateway integratio
 Status
 ******
 
-In active development, currently being deployed on our first cluster. 
+In active development, currently being deployed on our first cluster.
 Test it and provide your feedback.
 
 License
