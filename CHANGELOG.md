@@ -13,6 +13,20 @@ There should always be an "Unreleased" section for changes pending release.
 
 -
 
+[0.1.4] – 2025-11-30
+**********************************************
+
+### Fixed
+
+- General bug fixes
+- Enhanced invoice styling
+- Some refactoring for better code maintainability
+
+### Added
+
+- SKU field set as unique in the database
+- tox command for running makemigrations: `tox -e makemigrations`
+
 [0.1.1] – 2025-09-15
 **********************************************
 
