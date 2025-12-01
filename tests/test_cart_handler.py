@@ -140,18 +140,18 @@ class TestPaidCourseCartHandler:
         """
         Should raise InvalidCartError when there is existing cart with smae course.
         """
-        existing_cart = Cart.objects.create(user=self.learner_user, status=Cart.Status.PROCESSING)
+        existing_cart = Cart.objects.create(user=self.learner_user, status=Cart.Status.PAYMENT_PENDING)
         existing_cart.items.create(
             catalogue_item=self.catalog_item,
             original_price=self.catalog_item.price,
             final_price=self.catalog_item.price
         )
-        assert existing_cart.status == Cart.Status.PROCESSING
+        assert existing_cart.status == Cart.Status.PAYMENT_PENDING
         with pytest.raises(InvalidCartError) as exc:
             self.fulfillment.validate_add_to_cart(self.learner_user, self.catalog_item)
         assert str(exc.value) == (
             'Unable to add item to the cart as user has existing cart with same course. '
-            f'Duplicate cart found ID: {existing_cart.id}, state: {Cart.Status.PROCESSING}.'
+            f'Duplicate cart found ID: {existing_cart.id}, state: {Cart.Status.PAYMENT_PENDING}.'
         )
 
         existing_cart.status = Cart.Status.PENDING

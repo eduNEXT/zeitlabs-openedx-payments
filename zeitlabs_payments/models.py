@@ -30,6 +30,7 @@ class Cart(TimeStampedModel):
         PROCESSING = 'processing'
         PAID = 'paid'
         CANCELLED = 'cancelled'
+        PAYMENT_PENDING = 'payment_pending'
         REFUND_REQUESTED = 'refund_requested'
         REFUNDED = 'refunded'
 

@@ -229,7 +229,7 @@ class BaseProcessor:
                 payload=response,
                 related_transaction=transaction_record
             )
-
+        old_status = cart.status
         cart.status = Cart.Status.PAID
         cart.save(update_fields=['status'])
 
@@ -237,7 +237,7 @@ class BaseProcessor:
             action=AuditLog.AuditActions.CART_STATUS_UPDATED,
             cart=cart,
             context={
-                'old_status': Cart.Status.PROCESSING,
+                'old_status': old_status,
                 'new_status': Cart.Status.PAID,
             }
         )
@@ -304,15 +304,30 @@ class BaseProcessor:
         :param record_webhook_event: Whether to record webhook payload
         :return: Created Invoice instance or None
         """
-        if cart.status != Cart.Status.PROCESSING:
+        if cart.status not in [Cart.Status.PROCESSING, Cart.Status.PAYMENT_PENDING]:
             AuditLog.log(
                 action=AuditLog.AuditActions.RESPONSE_INVALID_CART,
                 cart=cart,
                 gateway=self.SLUG,
-                context={'cart_status': cart.status, 'required_cart_state': Cart.Status.PROCESSING}
+                context={
+                    'cart_status': cart.status,
+                    'required_cart_state': f'{Cart.Status.PROCESSING} or {Cart.Status.PAYMENT_PENDING}'}
             )
-            logger.warning(f'Cart {cart.id} in invalid status: {cart.status} (expected: PROCESSING).')
+            logger.warning(
+                f'Cart {cart.id} in invalid status: {cart.status} '
+                '(expected: PROCESSING or PAYMENT_PENDING ).'
+            )
             return None
+
+        if site_id:
+            try:
+                site = Site.objects.get(id=site_id)
+                request.site = site
+            except (Site.DoesNotExist, ValueError):
+                logger.warning(
+                    f'Site with id: {site_id} is invalid and does not exist.'
+                )
+                return None
 
         try:
             with db_transaction.atomic():

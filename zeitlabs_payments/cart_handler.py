@@ -118,7 +118,7 @@ class PaidCourseCartHandler(BaseCartHandler):
                 )
             check_user_enroll_conditions(user, course_mode)
             check_duplicate_cart_with_item(
-                user, course_mode, status=Cart.Status.PROCESSING, item_type=catalogue_item.ItemType.PAID_COURSE
+                user, course_mode, status=Cart.Status.PAYMENT_PENDING, item_type=catalogue_item.ItemType.PAID_COURSE
             )
         except CourseMode.DoesNotExist as exc:
             raise InvalidCartError('Unable to add item to the cart as CourseMode not found') from exc
