@@ -77,7 +77,7 @@ class PaymentProcessorAdminPageTest(TestCase):
         """
         original = admin.site.get_app_list
         try:
-            admin.site.get_app_list = lambda r: fake_app_list.copy()
+            admin.site.get_app_list = lambda r, app_label=None: fake_app_list.copy()
             PaymentProcessorAdminPage()
             app_list = admin.site.get_app_list(self.superuser_request)
 
