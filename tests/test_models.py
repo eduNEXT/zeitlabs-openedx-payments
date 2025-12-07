@@ -111,6 +111,16 @@ class TestTaxRule:
         tax = TaxRule.calculate_tax(Decimal('100.00'), None)
         assert tax == Decimal('0.00')
 
+    def test_calculate_tax_no_base_price(self):
+        rule = TaxRule.objects.create(
+            name='Fixed Tax',
+            tax_type=TaxRule.TaxType.FIXED,
+            tax_value=Decimal('5.00'),
+            is_active=True
+        )
+        tax = TaxRule.calculate_tax(None, rule)
+        assert tax == Decimal('0.00')
+
     def test_get_applicable_tax_returns_last_active(self):
         TaxRule.objects.create(
             name='Old Tax',
@@ -134,6 +144,11 @@ class TestTaxRule:
     def test_get_applicable_tax_no_active_rule(self):
         base_price = Decimal('100.00')
         tax_rule, tax_amount = TaxRule.get_applicable_tax(base_price)
+        assert tax_rule is None
+        assert tax_amount == Decimal('0.00')
+
+    def test_get_applicable_tax_no_base_price(self):
+        tax_rule, tax_amount = TaxRule.get_applicable_tax(None)
         assert tax_rule is None
         assert tax_amount == Decimal('0.00')
 

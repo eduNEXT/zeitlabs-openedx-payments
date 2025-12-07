@@ -68,9 +68,11 @@ TEMPLATES = [{
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 
 ECOMMERCE_PUBLIC_URL_ROOT = 'test.com'
-INVOICE_PREFIX = 'TEST'
-ORGANIZATION = 'test_org'
-CUSTOMER_NUMBER = '112233'
+ZEITLABS_PAYMENTS_SETTINGS = {
+    'invoice_prefix': 'TEST',
+    'organization': 'test_org',
+    'customer_number': '112233',
+    'valid_currency': 'SAR',
+}
 IS_ZEITLABS_PAYMENTS_ENABLED = False
-VALID_CURRENCY = 'SAR'
 SITE_ID = 1

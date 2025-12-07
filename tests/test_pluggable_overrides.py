@@ -1,5 +1,7 @@
 """Test for plauggable overrides."""
 
+from unittest.mock import Mock
+
 from django.test import override_settings
 
 from zeitlabs_payments.pluggable_overrides import override_ecommerce_checkout_page
@@ -10,12 +12,11 @@ def test_override_checkout_page_when_enabled_and_LMS_ROOT_URL_is_set(monkeypatch
     Test that custom checkout page is returned with LMS_ROOT_URL
     when its value is set in config
     """
-    def fake_get_value(key, default=None):  # pylint: disable=unused-argument
-        if key == 'IS_ZEITLABS_PAYMENTS_ENABLED':
-            return True
-        return 'http://testserver'
+    monkeypatch.setattr(
+        'zeitlabs_payments.pluggable_overrides.get_settings',
+        lambda: Mock(is_payment_enabled=True, root_url='http://testserver'),
+    )
 
-    monkeypatch.setattr('openedx.core.djangoapps.site_configuration.helpers.get_value', fake_get_value)
     skus = ['ABC123']
     result = override_ecommerce_checkout_page(lambda *a, **kw: 'should_not_be_called', None, *skus)
     assert result == 'http://testserver/checkout/v1/checkout/?sku=ABC123'
@@ -56,7 +57,7 @@ def test_override_checkout_page_when_disabled(monkeypatch):
 
 def test_override_checkout_page_when_not_set(monkeypatch):
     """
-    Test that default fuction is called when plugin is not set in config settings
+    Test that default function is called when plugin is not set in config settings
     """
     monkeypatch.setattr('openedx.core.djangoapps.site_configuration.helpers.get_value', lambda key, default=None: None)
     skus = ['does-not-matter']

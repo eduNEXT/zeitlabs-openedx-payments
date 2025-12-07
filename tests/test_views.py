@@ -3,7 +3,6 @@
 from unittest.mock import patch
 
 import pytest
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.sites.models import Site
 from django.test import RequestFactory, TestCase
@@ -11,7 +10,7 @@ from django.urls import reverse
 from rest_framework import status as http_status
 from rest_framework.test import APITestCase
 
-from zeitlabs_payments.helpers import get_currency
+from zeitlabs_payments.helpers import get_currency, get_settings
 from zeitlabs_payments.models import Cart, CatalogueItem, Invoice, Transaction
 from zeitlabs_payments.views import InitiatePaymentView
 
@@ -336,8 +335,8 @@ class InvoiceViewTest(BaseTestViewMixin):
         assert response.status_code == 200
         assert response.context['invoice'].invoice_number == 'TEST-111111'
         assert response.context['payment_method'] == 'manual'
-        assert response.context['organization'] == settings.ORGANIZATION
-        assert response.context['tax_number'] == settings.CUSTOMER_NUMBER
+        assert response.context['organization'] == get_settings().organization
+        assert response.context['tax_number'] == get_settings().customer_number
         assert response.context['currency'] == get_currency(cart)
 
     def test_unauthorized(self):
@@ -427,8 +426,8 @@ class InvoiceViewTest(BaseTestViewMixin):
         assert response.status_code == 200
         assert response.context['invoice'].invoice_number == 'INV-222222'
         assert response.context['payment_method'] == 'payfort'
-        assert response.context['organization'] == settings.ORGANIZATION
-        assert response.context['tax_number'] == settings.CUSTOMER_NUMBER
+        assert response.context['organization'] == get_settings().organization
+        assert response.context['tax_number'] == get_settings().customer_number
         assert response.context['currency'] == get_currency(cart)
 
 

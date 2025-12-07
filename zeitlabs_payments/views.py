@@ -2,7 +2,6 @@
 import logging
 from typing import Any
 
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.http import HttpResponseBadRequest
@@ -19,7 +18,7 @@ from rest_framework.views import APIView
 from zeitlabs_payments import models
 from zeitlabs_payments.cart_handler import CART_HANDLER
 from zeitlabs_payments.exceptions import InvalidCartError
-from zeitlabs_payments.helpers import get_currency
+from zeitlabs_payments.helpers import get_currency, get_settings
 from zeitlabs_payments.providers.registry import PROCESSORS, get_processor
 from zeitlabs_payments.serializers import CartSerializer
 
@@ -292,8 +291,8 @@ class InvoiceView(LoginRequiredMixin, TemplateView):
         context = {
             'invoice': invoice,
             'payment_method': payment_method,
-            'organization': settings.ORGANIZATION,
-            'tax_number': settings.CUSTOMER_NUMBER,
+            'organization': get_settings().organization,
+            'tax_number': get_settings().customer_number,
             'currency': get_currency(invoice.cart)
         }
         return render(request, self.template_name, context)
