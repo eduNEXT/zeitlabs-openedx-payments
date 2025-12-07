@@ -240,7 +240,32 @@ def test_process_payment_invalid_cart_status(cart):  # pylint: disable=redefined
     audit_log = AuditLog.objects.filter(
         gateway='dummy', cart=cart, action=AuditLog.AuditActions.RESPONSE_INVALID_CART
     )[0]
-    assert audit_log.details == 'Invalid cart state found. Cart is in state: pending instead of processing.'
+    assert audit_log.details == (
+        'Invalid cart state found. Cart is in state: '
+        'pending instead of processing or payment_pending.'
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('site_id_param', ['invalid', '00011', 10000])
+def test_process_payment_with_invalid_site_ids(cart, site_id_param):  # pylint: disable=redefined-outer-name
+    """
+    Test the process_payment_and_update_records method with different site_id inputs.
+    """
+    processor = DummyProcessor()
+    result = processor.process_payment_and_update_records(
+        cart=cart,
+        data={},
+        request=MagicMock(),
+        transaction_id='t1',
+        transaction_status='SUCCESS',
+        method='card',
+        amount='10',
+        currency='USD',
+        reason='ok',
+        site_id=site_id_param
+    )
+    assert result is None
 
 
 @pytest.mark.django_db

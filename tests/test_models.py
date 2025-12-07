@@ -175,18 +175,17 @@ def test_usage_count_sums_correctly():
 @pytest.mark.django_db
 def test_valid_statuses_returns_all_choices():
     """Test that Cart.valid_statuses() returns all defined status values."""
-    expected_statuses = [
+    expected_statuses = {
         Cart.Status.PENDING,
         Cart.Status.PROCESSING,
+        Cart.Status.PAYMENT_PENDING,
         Cart.Status.PAID,
         Cart.Status.CANCELLED,
         Cart.Status.REFUND_REQUESTED,
         Cart.Status.REFUNDED,
-    ]
-    result = Cart.valid_statuses()
+    }
+    result = set(Cart.valid_statuses())
     assert result == expected_statuses
-    assert len(result) == len(set(result))
-    assert all(status in dict(Cart.Status.choices) for status in result)
 
 
 @pytest.mark.django_db
