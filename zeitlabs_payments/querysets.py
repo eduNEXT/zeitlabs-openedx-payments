@@ -1,4 +1,6 @@
 """zeitlabs payments queryset functions."""
+from datetime import date
+
 from django.db.models import Prefetch, Subquery
 from django.db.models.query import QuerySet
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
@@ -14,6 +16,8 @@ def get_orders_queryset(  # pylint: disable= too-many-positional-arguments
     item_type: str | None = None,
     include_invoice: bool = False,
     include_user_details: bool = False,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> QuerySet:
     """
     Return serialized cart (order) data filtered by courses and users.
@@ -42,6 +46,12 @@ def get_orders_queryset(  # pylint: disable= too-many-positional-arguments
 
     if status:
         filtered_carts_qs = filtered_carts_qs.filter(status=status)
+
+    if date_from:
+        filtered_carts_qs = filtered_carts_qs.filter(created_at__date__gte=date_from)
+
+    if date_to:
+        filtered_carts_qs = filtered_carts_qs.filter(created_at__date__lte=date_to)
 
     filtered_carts_qs = filtered_carts_qs.prefetch_related(
         Prefetch('items', queryset=CartItem.objects.select_related('catalogue_item'))
