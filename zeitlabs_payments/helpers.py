@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import urljoin
 
@@ -32,6 +33,55 @@ VALID_PATTERNS = {
 MAX_ORDER_DESCRIPTION_LENGTH_DEFAULT = 150
 
 
+@dataclass
+class ZeitLabsPluginSettings:
+    """Dataclass to hold ZeitLabs Payments plugin settings."""
+
+    @staticmethod
+    def get_by_root_key(key: str, default: Any = None) -> Any:
+        """Retrieve a setting by root key with a default value."""
+        return configuration_helpers.get_value(
+            key,
+            getattr(settings, key, default),
+        )
+
+    @staticmethod
+    def get_by_zeitlabs_key(key: str, default: Any) -> Any:
+        """Retrieve a setting by key with a default value."""
+        site_settings = ZeitLabsPluginSettings.get_by_root_key('ZEITLABS_PAYMENTS_SETTINGS') or {}
+        return site_settings.get(key, default)
+
+    invoice_prefix: str = field(
+        default_factory=lambda: ZeitLabsPluginSettings.get_by_zeitlabs_key('invoice_prefix', '')
+    )
+    organization: str = field(
+        default_factory=lambda: ZeitLabsPluginSettings.get_by_zeitlabs_key('organization', '')
+    )
+    customer_number: str = field(
+        default_factory=lambda: ZeitLabsPluginSettings.get_by_zeitlabs_key('customer_number', '')
+    )
+    is_payments_enabled: bool = field(
+        default_factory=lambda: ZeitLabsPluginSettings.get_by_root_key('IS_ZEITLABS_PAYMENTS_ENABLED', False)
+    )
+    valid_currency: str = field(
+        default_factory=lambda: ZeitLabsPluginSettings.get_by_zeitlabs_key('valid_currency', '!!!')
+    )
+    root_url: str = field(
+        default_factory=lambda: ZeitLabsPluginSettings.get_by_root_key(
+            'LMS_ROOT_URL',
+            ZeitLabsPluginSettings.get_by_root_key(
+                'ECOMMERCE_PUBLIC_URL_ROOT',
+                'ZeitLabs Payments: neither LMS_ROOT_URL nor ECOMMERCE_PUBLIC_URL_ROOT is set!'
+            )
+        )
+    )
+
+
+def get_settings() -> ZeitLabsPluginSettings:
+    """Retrieve ZeitLabs Payments plugin settings."""
+    return ZeitLabsPluginSettings()
+
+
 def verify_param(param: Any, param_name: str, required_type: Any) -> None:
     """
     Verify a parameter type.
@@ -58,10 +108,11 @@ def get_currency(cart: Cart) -> str:
     :return: The valid currency code.
     :rtype: str
     """
+    valid_currency = get_settings().valid_currency
     for item in cart.items.all():
-        if item.catalogue_item.currency and item.catalogue_item.currency != settings.VALID_CURRENCY:
+        if item.catalogue_item.currency and item.catalogue_item.currency != valid_currency:
             raise Exception(f'Currency not supported: {item.catalogue_item.currency}')
-    return settings.VALID_CURRENCY
+    return valid_currency
 
 
 def get_language(request: Optional[Any]) -> str:
@@ -257,7 +308,7 @@ def generate_invoice_number(request: Any) -> str:
     :returns: A unique invoice number string with the given prefix (e.g., 'DEV-100002').
     :rtype: str
     """
-    prefix = configuration_helpers.get_value('INVOICE_PREFIX', settings.INVOICE_PREFIX)
+    prefix = get_settings().invoice_prefix
     last_invoice = Invoice.objects.filter(invoice_number__startswith=prefix).order_by('-invoice_number').first()
     if last_invoice and last_invoice.invoice_number:
         try:
