@@ -1,12 +1,16 @@
 """"test for zeitlabs payments querysets."""
+from datetime import timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.db.models import Prefetch
+from django.utils import timezone
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
 
 from zeitlabs_payments.models import Cart, CartItem, CatalogueItem, Invoice
 from zeitlabs_payments.querysets import get_orders_queryset
+
+User = get_user_model()
 
 
 @pytest.mark.django_db
@@ -14,7 +18,7 @@ def test_get_orders_queryset_filters_and_prefetches_correctly(
     base_data
 ):  # pylint: disable=unused-argument
     """Test get_orders_queryset returns expected carts filtered by item type, sku, and status."""
-    user = get_user_model().objects.get(id=3)
+    user = User.objects.get(id=3)
     item1 = CatalogueItem.objects.create(
         sku='COURSE-123',
         type=CatalogueItem.ItemType.PAID_COURSE,
@@ -147,7 +151,6 @@ def test_get_orders_queryset_with_accessible_courses_and_users(
         )
         return cart
 
-    User = get_user_model()
     user1, user2 = User.objects.get(id=3), User.objects.get(id=4)
     items = CatalogueItem.objects.filter(item_ref_id__in=['course-v1:org1+1+1', 'course-v1:org2+1+1'])
     u1_c1 = make_cart(user1, 0, Cart.Status.PENDING)
@@ -180,3 +183,69 @@ def test_get_orders_queryset_with_accessible_courses_and_users(
     expected = expected_map[expected_ids] if isinstance(expected_ids, str) else expected_ids
     actual = [c.id for c in qs]
     assert sorted(actual) == sorted(expected), f'Failed - {usecase}: expected {expected}, got {actual}'
+
+
+@pytest.mark.django_db
+def test_get_orders_queryset_date_filters():
+    """Test get_orders_queryset filters correctly by date_from and date_to."""
+    user = User.objects.get(id=3)
+    item = CatalogueItem.objects.create(
+        sku='COURSE-DATE',
+        type=CatalogueItem.ItemType.PAID_COURSE,
+        title='Date Course',
+        item_ref_id='course-v1:TestX+DATE101',
+        price=100,
+        currency='SAR',
+    )
+    cart1 = Cart.objects.create(user=user, status=Cart.Status.PAID)
+    CartItem.objects.create(cart=cart1, catalogue_item=item, final_price=100, original_price=100)
+    cart2 = Cart.objects.create(user=user, status=Cart.Status.PAID)
+    CartItem.objects.create(cart=cart2, catalogue_item=item, final_price=100, original_price=100)
+    cart3 = Cart.objects.create(user=user, status=Cart.Status.PAID)
+    CartItem.objects.create(cart=cart3, catalogue_item=item, final_price=100, original_price=100)
+
+    today = timezone.now().date()
+    yesterday = today - timedelta(days=1)
+    two_days_ago = today - timedelta(days=2)
+    cart1.created_at = two_days_ago
+    cart1.save()
+    cart2.created_at = yesterday
+    cart2.save()
+    cart3.created_at = today
+    cart3.save()
+
+    # Filter carts from yesterday onwards
+    qs = get_orders_queryset(
+        filtered_courses_qs=None,
+        filtered_users_qs=None,
+        date_from=yesterday,
+        date_to=None,
+    )
+    returned_ids = [c.id for c in qs]
+    assert cart2.id in returned_ids
+    assert cart3.id in returned_ids
+    assert cart1.id not in returned_ids
+
+    # Filter carts up to yesterday
+    qs = get_orders_queryset(
+        filtered_courses_qs=None,
+        filtered_users_qs=None,
+        date_from=None,
+        date_to=yesterday,
+    )
+    returned_ids = [c.id for c in qs]
+    assert cart1.id in returned_ids
+    assert cart2.id in returned_ids
+    assert cart3.id not in returned_ids
+
+    # Filter carts between two_days_ago and yesterday
+    qs = get_orders_queryset(
+        filtered_courses_qs=None,
+        filtered_users_qs=None,
+        date_from=two_days_ago,
+        date_to=yesterday,
+    )
+    returned_ids = [c.id for c in qs]
+    assert cart1.id in returned_ids
+    assert cart2.id in returned_ids
+    assert cart3.id not in returned_ids
