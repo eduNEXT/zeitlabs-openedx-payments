@@ -16,7 +16,7 @@ class ManualPaymentProcessor(BaseProcessor):
     """Manual payment processor."""
 
     SLUG = 'manual'
-    CHECKOUT_TEXT = ''
+    CHECKOUT_TEXT = 'Manual Payment'
     NAME = 'Manual Payment'
 
     def get_transaction_parameters(
