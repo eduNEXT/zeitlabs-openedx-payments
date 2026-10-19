@@ -1,0 +1,40 @@
+{% extends "zeitlabs_payments/status_page.html" %}
+{% load i18n %}
+
+{% block status_icon_class %}warning{% endblock %}
+
+{% block status_icon %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <circle cx="12" cy="12" r="10"/>
+    <line x1="12" y1="8" x2="12" y2="12"/>
+    <line x1="12" y1="16" x2="12.01" y2="16"/>
+</svg>
+{% endblock %}
+
+{# Two wordings: a payment taken whose enrolment was not completed, and one not confirmed yet (unconfirmed). #}
+{% block status_title %}{% if unconfirmed %}{% trans "Payment Not Yet Confirmed" %}{% else %}{% trans "Payment Received" %}{% endif %}{% endblock %}
+
+{% block status_content %}
+{% if unconfirmed %}
+<p class="status-message">
+    {% trans "Your bank or the payment provider has not confirmed your payment yet." %}
+</p>
+<p class="status-message">
+    {% trans "Please do not pay again. If your card was charged and the course does not appear in your dashboard, contact support and quote the reference below." %}
+</p>
+{% else %}
+<p class="status-message">
+    {% trans "Your payment was received, but we could not complete your enrolment automatically." %}
+</p>
+<p class="status-message">
+    {% trans "Please do not pay again. Contact support and quote the reference below so we can complete it." %}
+</p>
+{% endif %}
+{% endblock %}
+
+{# No retry action: retrying here would charge the learner a second time. #}
+{% block status_actions %}
+<a href="{% url 'dashboard' %}" class="btn btn-primary go-to-dashboard-button">
+    {% trans "Go to Dashboard" %}
+</a>
+{% endblock %}

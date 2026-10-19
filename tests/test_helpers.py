@@ -5,28 +5,51 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from common.djangoapps.course_modes.models import CourseMode
-from common.djangoapps.student.models import AlreadyEnrolledError, CourseFullError, EnrollmentClosedError
+from common.djangoapps.student.models import (
+    AlreadyEnrolledError,
+    CourseEnrollment,
+    CourseFullError,
+    EnrollmentClosedError,
+)
 from django.contrib.auth import get_user_model
 from django.contrib.sites.models import Site
+from django.test import override_settings
 
-from zeitlabs_payments.exceptions import DuplicateCartError, GatewayError
+from zeitlabs_payments.exceptions import (
+    ConfigurationError,
+    CurrencyMismatchError,
+    DuplicateCartError,
+    GatewayError,
+    InFlightPaymentError,
+)
 from zeitlabs_payments.helpers import (
     MAX_ORDER_DESCRIPTION_LENGTH_DEFAULT,
     cancel_old_pending_carts,
-    check_duplicate_cart_with_item,
+    check_carts_holding_item,
     check_user_enroll_conditions,
+    describe_error,
     generate_invoice_number,
+    generate_invoice_qr_code,
     get_course_id,
     get_currency,
     get_customer_name,
     get_language,
     get_merchant_reference,
     get_order_description,
+    learner_holds_mode,
     relative_url_to_absolute_url,
     sanitize_text,
     verify_param,
 )
-from zeitlabs_payments.models import AuditLog, Cart, CartItem, CatalogueItem, Invoice
+from zeitlabs_payments.models import (
+    AuditLog,
+    Cart,
+    CartItem,
+    CatalogueItem,
+    Invoice,
+    InvoiceNumberSequence,
+    Transaction,
+)
 
 User = get_user_model()
 
@@ -53,21 +76,91 @@ def test_get_currency_valid(base_data: None) -> None:  # pylint: disable=unused-
 @pytest.mark.django_db
 def test_get_currency_raises_for_invalid_currency(base_data: None) -> None:  # pylint: disable=unused-argument
     """
-    Test get_currency raises Exception for invalid currency.
+    Verify that get_currency raises CurrencyMismatchError for an unsupported currency.
+
+    A valid save can no longer produce such a row, so the offending value is written straight to the database with
+    ``update()``. This covers the runtime guard against a database seeded or migrated outside the application.
 
     :param base_data: Fixture to load base data (assumed)
     :return: None
     """
     user = User.objects.get(id=3)
     course_item = CatalogueItem.objects.get(sku='custom-sku-2')
+    CatalogueItem.objects.filter(pk=course_item.pk).update(currency='invlaid-curr')
+    course_item.refresh_from_db()
     user_cart = Cart.objects.create(user=user, status=Cart.Status.PENDING)
     user_cart.items.create(
         catalogue_item=course_item,
         original_price=course_item.price,
         final_price=course_item.price
     )
-    with pytest.raises(Exception, match='Currency not supported: invlaid-curr'):
+    with pytest.raises(CurrencyMismatchError, match='Currency not supported: invlaid-curr'):
         get_currency(user_cart)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    'configured, usecase',
+    [
+        ({}, 'the setting is absent altogether'),
+        ({'valid_currency': ''}, 'the setting is present but empty'),
+        ({'valid_currency': '   '}, 'the setting holds only whitespace'),
+        ({'valid_currency': '  SAR  '}, 'a real code padded with whitespace is still a bad entry'),
+        ({'valid_currency': 'XYZ'}, 'a well-formed code that no gateway settles'),
+        ({'valid_currency': 368}, 'a numeric code rather than an alpha one'),
+    ],
+)
+def test_get_currency_raises_when_deployment_currency_unset(
+    configured: dict, usecase: str, base_data: None  # pylint: disable=unused-argument
+) -> None:
+    """
+    Verify that get_currency raises ConfigurationError for every value that is not a supported currency.
+
+    There is no placeholder default any more, so an unusable currency has to fail at first use rather than travel
+    onward and render to the learner. One rule decides it: the uppercase code must be a supported ISO 4217
+    currency. Padding is not repaired on the operator's behalf -- a padded code is a bad entry, and accepting it
+    would hide the typo rather than report it.
+
+    :param configured: The ZEITLABS_PAYMENTS_SETTINGS value under test
+    :param usecase: Description of the case being covered
+    :param base_data: Fixture to load base data (assumed)
+    :return: None
+    """
+    user = User.objects.get(id=3)
+    course_item = CatalogueItem.objects.get(sku='custom-sku-1')
+    user_cart = Cart.objects.create(user=user, status=Cart.Status.PENDING)
+    user_cart.items.create(
+        catalogue_item=course_item,
+        original_price=course_item.price,
+        final_price=course_item.price
+    )
+    with override_settings(ZEITLABS_PAYMENTS_SETTINGS=configured):
+        with pytest.raises(ConfigurationError, match='valid_currency') as exc:
+            get_currency(user_cart)
+    assert 'valid_currency' in str(exc.value), f'Failed usecase: {usecase}'
+
+
+@pytest.mark.django_db
+@override_settings(ZEITLABS_PAYMENTS_SETTINGS={'valid_currency': 'sar'})
+def test_get_currency_matches_case_insensitively(base_data: None) -> None:  # pylint: disable=unused-argument
+    """
+    Verify that a lowercase configured currency resolves and still matches the catalogue.
+
+    Uppercase is the canonical form, so case is not a second currency: a deployment configured as ``sar`` trades in
+    ``SAR``, and comparing case-sensitively against a catalogue item would fail every payment over capitalisation.
+
+    :param base_data: Fixture to load base data (assumed)
+    :return: None
+    """
+    user = User.objects.get(id=3)
+    course_item = CatalogueItem.objects.get(sku='custom-sku-1')
+    user_cart = Cart.objects.create(user=user, status=Cart.Status.PENDING)
+    user_cart.items.create(
+        catalogue_item=course_item,
+        original_price=course_item.price,
+        final_price=course_item.price
+    )
+    assert get_currency(user_cart) == 'SAR', 'The canonical uppercase form is what callers receive'
 
 
 @pytest.mark.parametrize(
@@ -309,7 +402,7 @@ def test_get_course_id(sku: Optional[str], expect_exception: bool, expected_mess
     :return: None
     """
     if not sku:
-        item = CatalogueItem.objects.create(sku='abcd', type='unsupported', price=50)
+        item = CatalogueItem.objects.create(sku='abcd', type='unsupported', price=50, currency='SAR')
     else:
         item = CatalogueItem.objects.get(sku=sku)
 
@@ -370,35 +463,75 @@ def test_get_order_description_invalid_cart():
 
 
 @pytest.mark.django_db
-def test_generate_invoice_number_no_previous_invoice():
+def test_generate_invoice_number_opens_a_series_at_100001():
     """
-    Should generate invoice number starting from 100001 when no previous invoice exists.
+    Verify that the first number issued under a prefix opens that prefix's series at 100001.
     """
-    invoice_number = generate_invoice_number(request=None)
-    assert invoice_number == 'TEST-100001'
+    assert generate_invoice_number() == 'TEST-100001', 'A prefix with no counter yet starts its series at 100001'
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('configured', ['', '   ', None])
+def test_generate_invoice_number_refuses_a_blank_prefix(configured):
+    """
+    Verify that a missing or blank prefix is refused rather than yielding a number that names no series.
+    """
+    with override_settings(ZEITLABS_PAYMENTS_SETTINGS={'invoice_prefix': configured}):
+        with pytest.raises(ConfigurationError, match='invoice_prefix'):
+            generate_invoice_number()
 
 
 @pytest.mark.django_db
 @pytest.mark.parametrize(
-    'existing_invoice_number, expected_invoice_number',
+    'configured, usecase',
     [
-        ('TEST-100005', 'TEST-100006'),
-        ('TEST-INVALID', 'TEST-100001'),
-    ]
+        ('DEV_1', 'an underscore'),
+        ('DEV-', 'a trailing hyphen'),
+        ('-DEV', 'a leading hyphen'),
+        ('DE V', 'an inner space that stripping does not reach'),
+        ('A' * 64, 'a label past the length RFC 1123 allows'),
+    ],
 )
-def test_generate_invoice_number_with_existing_invoice(existing_invoice_number, expected_invoice_number):
+def test_generate_invoice_number_refuses_a_malformed_prefix(configured, usecase):
     """
-    Should increment when last invoice number is valid,
-    or reset when last invoice number is invalid.
+    Verify that a configured prefix outside the allowed alphabet is refused rather than naming a series.
     """
-    Invoice.objects.create(
-        invoice_number=existing_invoice_number,
-        total=100,
-        cart=Cart.objects.create(user=User.objects.get(id=3), status=Cart.Status.PAID),
-        gross_total=100
-    )
-    invoice_number = generate_invoice_number(request=None)
-    assert invoice_number == expected_invoice_number
+    with override_settings(ZEITLABS_PAYMENTS_SETTINGS={'invoice_prefix': configured}):
+        with pytest.raises(ConfigurationError, match='invoice_prefix'):
+            generate_invoice_number()
+    assert not InvoiceNumberSequence.objects.exists(), f'Failed usecase: {usecase}'
+
+
+@pytest.mark.django_db
+def test_generate_invoice_number_normalizes_the_configured_prefix():
+    """
+    Verify that casing and surrounding whitespace do not split one deployment's series into several.
+    """
+    with override_settings(ZEITLABS_PAYMENTS_SETTINGS={'invoice_prefix': 'dev'}):
+        assert generate_invoice_number() == 'DEV-100001', 'A lowercase prefix is issued uppercased'
+    with override_settings(ZEITLABS_PAYMENTS_SETTINGS={'invoice_prefix': '  DEV  '}):
+        assert generate_invoice_number() == 'DEV-100002', 'Padding does not open a second series'
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures('base_data')
+@pytest.mark.parametrize('enrolment, holds, usecase', [
+    (None, False, 'a learner not enrolled in the course'),
+    (('no-id-professional', True), True, 'a learner enrolled in the very mode bought'),
+    (('no-id-professional', False), False, 'a learner who left the course after enrolling in that mode'),
+    (('audit', True), False, 'a learner enrolled in the course in another mode'),
+])
+def test_learner_holds_mode_only_for_an_active_enrolment_in_that_very_mode(enrolment, holds, usecase):
+    """
+    Verify that a learner holds a course mode only while enrolled in that mode, and active, and in no other case.
+    """
+    user = User.objects.get(id=3)
+    course_mode = CourseMode.objects.get(sku='custom-sku-1')
+    if enrolment:
+        mode, is_active = enrolment
+        CourseEnrollment.objects.create(user=user, course=course_mode.course, mode=mode, is_active=is_active)
+
+    assert learner_holds_mode(user, course_mode) is holds, f'Failed usecase: {usecase}'
 
 
 @pytest.mark.django_db
@@ -457,7 +590,7 @@ def test_cancel_old_pending_carts():
         'All user carts should be in CANCELLED status'
 
     audit_logs = AuditLog.objects.filter(
-        action=AuditLog.AuditActions.CART_STATUS_UPDATED,
+        action=AuditLog.AuditActions.CART_CANCELLED,
         cart__user=user,
     )
     assert audit_logs.count() == 2, 'Only pending carts should generate audit logs'
@@ -467,117 +600,289 @@ def test_cancel_old_pending_carts():
     assert logged_ids == updated_ids, 'Audit logs should only exist for carts that were updated from PENDING'
 
 
-@pytest.mark.django_db
-def test_no_duplicate_cart_found():
-    """No duplicate → should NOT raise."""
-    user = User.objects.get(id=3)
-    course_mode = CourseMode.objects.get(sku='custom-sku-1')
-    check_duplicate_cart_with_item(user, course_mode)
-
-
-@pytest.mark.django_db
-def test_duplicate_exists_but_different_status():
-    """Duplicate exists but NOT in PROCESSING → should NOT raise."""
-    user = User.objects.get(id=3)
-    course_mode = CourseMode.objects.get(sku='custom-sku-1')
-    item = CatalogueItem.objects.get(sku='custom-sku-1')
-    cart = Cart.objects.create(user=user, status=Cart.Status.PENDING)
+def cart_holding(item, status, gateway='dummy', user_id=3):
+    """Return a cart of the learner holding the item, in the given status and handed to the given gateway."""
+    cart = Cart.objects.create(user=User.objects.get(id=user_id), status=status, gateway=gateway)
     cart.items.create(catalogue_item=item, original_price=item.price, final_price=item.price)
-    # Default checks only PROCESSING
-    check_duplicate_cart_with_item(user, course_mode)
+    return cart
+
+
+def invoice_cart(cart):
+    """Give the cart the invoice a fulfilled payment has."""
+    item = cart.items.get().catalogue_item
+    payment = Transaction.objects.create(
+        cart=cart, amount=item.price, gateway='dummy', gateway_transaction_id=f'TX-{cart.id}',
+    )
+    Invoice.objects.create(
+        status=Invoice.InvoiceStatus.PAID, invoice_number=f'TEST-{cart.id}', cart=cart, gross_total=item.price,
+        total=item.price, currency='SAR', related_transaction=payment,
+    )
+
+
+# How a cart in each status, holding the item and handed to a gateway, answers its learner buying the item again: None
+# when it lets them, or the error it raises. Every status is listed, so a status added later fails
+# test_every_cart_status_is_decided_for_buying_again until someone decides how it answers.
+BUYING_AGAIN_BESIDE = {
+    Cart.Status.PENDING: None,
+    Cart.Status.CANCELLED: None,
+    Cart.Status.CLOSED: None,
+    Cart.Status.EXPIRED: None,
+    Cart.Status.REFUNDED: None,
+    Cart.Status.PROCESSING: InFlightPaymentError,
+    Cart.Status.PAYMENT_PENDING: InFlightPaymentError,
+    Cart.Status.PAID: DuplicateCartError,
+    Cart.Status.UNRECONCILED: DuplicateCartError,
+    Cart.Status.REFUND_REQUESTED: DuplicateCartError,
+}
+
+
+def test_every_cart_status_is_decided_for_buying_again():
+    """
+    Verify that every cart status is decided as blocking its learner buying the same item again or not, and that the
+    statuses decided not to are exactly the non-blocking ones.
+    """
+    assert set(BUYING_AGAIN_BESIDE) == set(Cart.Status.values), 'A cart status is not decided for buying again'
+    assert set(Cart.NON_BLOCKING_STATUSES) == {
+        status for status, error in BUYING_AGAIN_BESIDE.items() if error is None
+    }, 'NON_BLOCKING_STATUSES does not list exactly the statuses decided not to block'
 
 
 @pytest.mark.django_db
-def test_duplicate_exists_but_different_item_type():
-    """Duplicate exists but item_type filter mismatch → should NOT raise."""
-    user = User.objects.get(id=3)
-    course_mode = CourseMode.objects.get(sku='custom-sku-1')
+@pytest.mark.usefixtures('base_data')
+@pytest.mark.parametrize('status, error', BUYING_AGAIN_BESIDE.items())
+def test_a_cart_holding_the_item_blocks_buying_it_unless_its_status_does_not(status, error):
+    """
+    Verify that a cart holding the item blocks its learner buying it again, sending them back to a payment in flight,
+    unless its status is one that does not block.
+    """
     item = CatalogueItem.objects.get(sku='custom-sku-1')
-    cart = Cart.objects.create(user=user, status=Cart.Status.PROCESSING)
-    cart.items.create(
-        catalogue_item=item,
-        original_price=item.price,
-        final_price=item.price
-    )
-    item.type = 'other_type'
-    item.save()
+    cart_holding(item, status)
 
-    # Requesting a specific item_type; mismatch → no exception
-    check_duplicate_cart_with_item(user, course_mode, item_type=item.ItemType.PAID_COURSE)
+    if error is None:
+        check_carts_holding_item(User.objects.get(id=3), item)
+    else:
+        with pytest.raises(error):
+            check_carts_holding_item(User.objects.get(id=3), item)
 
 
 @pytest.mark.django_db
-def test_duplicate_exists_with_matching_item_type():
-    """Duplicate exists and item_type matches → should raise."""
-    user = User.objects.get(id=3)
-    course_mode = CourseMode.objects.get(sku='custom-sku-1')
+@pytest.mark.usefixtures('base_data')
+def test_a_payment_in_flight_is_raised_with_its_cart_before_any_other():
+    """
+    Verify that a payment in flight is raised carrying its cart, even beside another blocking cart, so its learner can
+    still be sent back to it.
+    """
     item = CatalogueItem.objects.get(sku='custom-sku-1')
-    cart = Cart.objects.create(user=user, status=Cart.Status.PROCESSING)
-    cart.items.create(
-        catalogue_item=item,
-        original_price=item.price,
-        final_price=item.price
-    )
+    cart_holding(item, Cart.Status.UNRECONCILED)
+    inflight = cart_holding(item, Cart.Status.PAYMENT_PENDING)
 
+    with pytest.raises(InFlightPaymentError) as raised:
+        check_carts_holding_item(User.objects.get(id=3), item)
+
+    assert raised.value.cart == inflight, 'The payment in flight is not the cart raised'
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures('base_data')
+@pytest.mark.parametrize('status, invoiced, refusal, usecase', [
+    (Cart.Status.PAID, True, 'It was already bought in cart {id}.', 'a completed sale'),
+    (Cart.Status.PAID, False, 'A payment for it in cart {id} is still being resolved.', 'paid, not invoiced'),
+    (
+        Cart.Status.PROCESSING, False, 'A payment for it in cart {id} is still being resolved.',
+        'handed off without its gateway recorded, which cannot be asked about again',
+    ),
+])
+def test_a_blocking_cart_not_in_flight_refuses_saying_why(status, invoiced, refusal, usecase):
+    """
+    Verify that a blocking cart whose payment is not in flight refuses the item, telling a completed sale from a
+    payment still being resolved.
+    """
+    item = CatalogueItem.objects.get(sku='custom-sku-1')
+    cart = cart_holding(item, status, gateway=None)
+    if invoiced:
+        invoice_cart(cart)
+
+    with pytest.raises(DuplicateCartError) as raised:
+        check_carts_holding_item(User.objects.get(id=3), item)
+
+    assert str(raised.value) == refusal.format(id=cart.id), f'Failed usecase: {usecase}'
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures('base_data')
+def test_a_course_is_held_by_any_of_its_paid_items():
+    """
+    Verify that a cart holding another paid item of the same course blocks buying the course, while one holding another
+    course does not.
+
+    Open edX keeps one enrolment per learner and course, so two paid modes of one course cannot both be fulfilled.
+    """
+    item = CatalogueItem.objects.get(sku='custom-sku-1')
+    same_course = CatalogueItem.objects.create(
+        sku='custom-sku-1-other-mode', type=CatalogueItem.ItemType.PAID_COURSE, title='Same course, other mode',
+        item_ref_id=item.item_ref_id, price=item.price, currency=item.currency,
+    )
+    other_course = CatalogueItem.objects.get(sku='course1-org2-no-id-professional')
+    cart_holding(other_course, Cart.Status.UNRECONCILED)
+    check_carts_holding_item(User.objects.get(id=3), item)
+
+    cart_holding(same_course, Cart.Status.UNRECONCILED)
     with pytest.raises(DuplicateCartError):
-        check_duplicate_cart_with_item(user, course_mode, item_type=item.ItemType.PAID_COURSE)
+        check_carts_holding_item(User.objects.get(id=3), item)
 
 
 @pytest.mark.django_db
-def test_duplicate_exists_but_different_course():
-    """Cart has item, but a different course → should NOT raise."""
-    user = User.objects.get(id=3)
-    course_mode_requested = CourseMode.objects.get(sku='custom-sku-1')
-    requested_item_ref = str(course_mode_requested.course.id)
+@pytest.mark.usefixtures('base_data')
+@pytest.mark.parametrize('held_sku, bought_sku', [
+    ('custom-sku-1', 'BUNDLE-PRO-CERT'),
+    ('BUNDLE-PRO-CERT', 'custom-sku-1'),
+], ids=['a bundle bought after one of its courses', 'a course bought after a bundle containing it'])
+def test_a_course_and_a_bundle_containing_it_never_block_each_other(held_sku, bought_sku):
+    """
+    Verify that a cart holding a course never blocks buying a bundle that contains it, nor the other way round.
 
-    another_item = CatalogueItem.objects.exclude(item_ref_id=requested_item_ref).first()
-    cart = Cart.objects.create(user=user, status=Cart.Status.PROCESSING)
-    cart.items.create(
-        catalogue_item=another_item,
-        original_price=another_item.price,
-        final_price=another_item.price
-    )
+    Buying a course must never stop its learner buying a bundle that contains it. Whether a learner may buy a course
+    they hold through a bundle is decided by their enrolment, not their carts.
+    """
+    for status in (Cart.Status.PAYMENT_PENDING, Cart.Status.PAID, Cart.Status.UNRECONCILED):
+        cart_holding(CatalogueItem.objects.get(sku=held_sku), status)
 
-    check_duplicate_cart_with_item(user, course_mode_requested)
-
-
-@pytest.mark.django_db
-def test_duplicate_exists_when_custom_status_provided():
-    """Check duplicate only for the explicitly provided status."""
-    user = User.objects.get(id=3)
-    course_mode = CourseMode.objects.get(sku='custom-sku-1')
-    item = CatalogueItem.objects.get(sku='custom-sku-1')
-
-    cart = Cart.objects.create(user=user, status=Cart.Status.PENDING)
-    cart.items.create(
-        catalogue_item=item,
-        original_price=item.price,
-        final_price=item.price
-    )
-
-    # Should raise when checking PENDING explicitly
-    with pytest.raises(DuplicateCartError):
-        check_duplicate_cart_with_item(user, course_mode, status=Cart.Status.PENDING)
+    check_carts_holding_item(User.objects.get(id=3), CatalogueItem.objects.get(sku=bought_sku))
 
 
 @pytest.mark.django_db
-def test_multiple_carts_but_one_matching():
-    """Only one cart matches criteria → should raise."""
+@pytest.mark.usefixtures('base_data')
+def test_the_same_bundle_blocks_buying_it_again():
+    """Verify that a bundle already bought blocks buying it again."""
+    bundle = CatalogueItem.objects.get(sku='BUNDLE-PRO-CERT')
+    cart = cart_holding(bundle, Cart.Status.PAID)
+    invoice_cart(cart)
+
+    with pytest.raises(DuplicateCartError, match=f'already bought in cart {cart.id}'):
+        check_carts_holding_item(User.objects.get(id=3), bundle)
+
+
+@pytest.mark.django_db
+def test_cancel_old_pending_carts_leaves_a_cart_another_request_handed_off():
+    """
+    Verify that a pending cart another request moves to processing while carts are being cancelled is left as it is.
+
+    The learner may be paying for it in another tab, so cancelling it would cancel a payment under way. The other
+    pending carts are still cancelled.
+    """
     user = User.objects.get(id=3)
-    course_mode = CourseMode.objects.get(sku='custom-sku-1')
-    item = CatalogueItem.objects.get(sku='custom-sku-1')
+    handed_off = Cart.objects.create(user=user, status=Cart.Status.PENDING)
+    still_pending = Cart.objects.create(user=user, status=Cart.Status.PENDING)
+    AuditLog.objects.all().delete()
+    change_status = Cart.change_status
 
-    # Non-matching cart
-    cart1 = Cart.objects.create(user=user, status=Cart.Status.PENDING)
-    cart1.items.create(catalogue_item=item, original_price=item.price, final_price=item.price)
+    def hand_off_before_cancelling(cart, *args, **kwargs):
+        if cart.pk == handed_off.pk:
+            Cart.objects.filter(pk=cart.pk).update(status=Cart.Status.PROCESSING)
+        return change_status(cart, *args, **kwargs)
 
-    # Matching cart
-    cart2 = Cart.objects.create(user=user, status=Cart.Status.PROCESSING)
-    cart2.items.create(catalogue_item=item, original_price=item.price, final_price=item.price)
+    with patch.object(Cart, 'change_status', autospec=True, side_effect=hand_off_before_cancelling):
+        cancel_old_pending_carts(user)
 
-    with pytest.raises(DuplicateCartError) as exc:
-        check_duplicate_cart_with_item(user, course_mode)
+    assert Cart.objects.get(pk=handed_off.pk).status == Cart.Status.PROCESSING, 'A handed-off cart was cancelled'
+    assert Cart.objects.get(pk=still_pending.pk).status == Cart.Status.CANCELLED, 'A pending cart was not cancelled'
+    assert list(AuditLog.objects.values_list('cart_id', flat=True)) == [still_pending.pk], \
+        'Only the cancelled cart should be on the record'
 
-    assert str(exc.value) == (
-        f'Duplicate cart found ID: {cart2.id}, state: {Cart.Status.PROCESSING}.'
-    )
+
+@pytest.mark.django_db
+def test_cancel_old_pending_carts_writes_nothing_when_there_is_nothing_to_cancel():
+    """
+    Verify that a user with no pending cart leaves both the cart table and the audit trail untouched.
+
+    Every add-to-cart calls this first, so the common case is the one where there is nothing to cancel. An
+    audit entry there would fill the trail with rows recording that nothing happened.
+    """
+    user = User.objects.get(id=4)
+    Cart.objects.create(user=user, status=Cart.Status.CANCELLED)
+    Cart.objects.create(user=user, status=Cart.Status.PAID)
+    AuditLog.objects.all().delete()
+
+    cancel_old_pending_carts(user)
+
+    assert not AuditLog.objects.exists(), 'Cancelling nothing should write no audit entry'
+    assert set(Cart.objects.filter(user=user).values_list('status', flat=True)) == {
+        Cart.Status.CANCELLED, Cart.Status.PAID,
+    }, 'Carts that were never pending should keep the status they had'
+
+
+@pytest.mark.django_db
+def test_generate_invoice_qr_code_returns_an_inline_svg():
+    """
+    Verify that a receipt URL becomes an inline SVG the invoice template can render without a file.
+    """
+    svg = generate_invoice_qr_code('https://learn.example.com/payment/v2/invoice/12345/')
+
+    assert svg.startswith('<svg '), 'The QR code must be an inline SVG element'
+    assert 'id="qr-path"' in svg, 'The SVG must carry the QR path it encodes'
+
+
+@pytest.mark.django_db
+@patch('zeitlabs_payments.helpers.qrcode.QRCode')
+def test_generate_invoice_qr_code_encodes_exactly_the_url_it_is_given(mock_qr_code):
+    """
+    Verify that the URL is encoded unmodified, since a printed receipt cannot be reissued against a new host.
+    """
+    receipt_url = 'https://learn.example.com/payment/v2/invoice/12345/'
+    mock_qr_code.return_value.make_image.return_value.to_string.return_value = '<svg/>'
+
+    generate_invoice_qr_code(receipt_url)
+
+    mock_qr_code.return_value.add_data.assert_called_once_with(receipt_url)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('receipt_url, usecase', [(None, 'no URL at all'), ('', 'nothing at all')])
+def test_generate_invoice_qr_code_returns_nothing_without_a_url(receipt_url, usecase):
+    """
+    Verify that an invoice issued before the origin was recorded gets no QR code rather than an error.
+    """
+    assert generate_invoice_qr_code(receipt_url) == '', f'Failed usecase: {usecase}'
+
+
+def test_describe_error_names_the_error_and_every_error_behind_it():
+    """
+    Verify that an error is named with the errors behind it, outermost first, by class and message: the one it was
+    raised from, and the one being handled when that was raised.
+    """
+    with pytest.raises(GatewayError) as raised:
+        try:
+            try:
+                raise KeyError('ACCESS_TOKEN')
+            except KeyError:
+                raise ValueError('settings incomplete')  # pylint: disable=raise-missing-from
+        except ValueError as exc:
+            raise GatewayError('cannot set up') from exc
+
+    assert describe_error(raised.value) == (
+        "GatewayError: cannot set up, caused by ValueError: settings incomplete, caused by KeyError: 'ACCESS_TOKEN'"
+    ), 'The error is not named together with every error behind it'
+
+
+def test_describe_error_names_an_error_without_a_message_by_its_class():
+    """Verify that an error raised with no message, as Open edX raises its enrolment errors, is named by its class."""
+    assert describe_error(EnrollmentClosedError()) == 'EnrollmentClosedError', 'The error is not named by its class'
+
+
+def test_describe_error_leaves_out_what_an_error_hides():
+    """Verify that an error raised ``from None`` is named without the error it hides."""
+    with pytest.raises(GatewayError) as raised:
+        try:
+            raise KeyError('ACCESS_TOKEN')
+        except KeyError:
+            raise GatewayError('cannot set up') from None
+
+    assert describe_error(raised.value) == 'GatewayError: cannot set up', 'The hidden error was named'
+
+
+def test_describe_error_names_each_error_once_when_they_cause_each_other():
+    """Verify that errors chained into a loop are each named once, rather than described without end."""
+    first, second = ValueError('first'), ValueError('second')
+    first.__cause__, second.__cause__ = second, first
+
+    assert describe_error(first) == 'ValueError: first, caused by ValueError: second', 'The loop was not cut'

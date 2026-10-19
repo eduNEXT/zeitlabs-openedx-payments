@@ -1,0 +1,8 @@
+-c https://raw.githubusercontent.com/openedx/edx-platform/refs/heads/release/teak/requirements/constraints.txt
+
+# edx-platform related requirements. Pinned to the versions used in Teak.
+babel==2.17.0
+djangorestframework==3.14.0
+edx-django-utils==7.4.0
+edx-opaque-keys==3.0.0
+edx-toggles==5.3.0

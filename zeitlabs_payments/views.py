@@ -1,12 +1,20 @@
 """Zeilabs payments views."""
 import logging
-from typing import Any
+from functools import lru_cache
+from typing import Any, Optional
+from urllib.parse import urlencode, urljoin, urlsplit
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.http import HttpResponseBadRequest
-from django.shortcuts import get_object_or_404, render
+from django.contrib.sites.shortcuts import get_current_site
+from django.core.exceptions import ValidationError
+from django.db import transaction as db_transaction
+from django.http import Http404, HttpResponse, HttpResponseBadRequest
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils.decorators import method_decorator
+from django.utils.module_loading import import_string
+from django.utils.translation import gettext as _
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import TemplateView
@@ -17,10 +25,17 @@ from rest_framework.views import APIView
 
 from zeitlabs_payments import models
 from zeitlabs_payments.cart_handler import CART_HANDLER
-from zeitlabs_payments.exceptions import InvalidCartError
-from zeitlabs_payments.helpers import get_currency, get_settings
-from zeitlabs_payments.providers.registry import PROCESSORS, get_processor
+from zeitlabs_payments.exceptions import CartStatusError, InvalidCartError
+from zeitlabs_payments.inflight_payment import (
+    InFlightPayment,
+    Resolution,
+    create_cart_resolving_inflight_payments,
+    waiting_time,
+)
+from zeitlabs_payments.invoice_info import get_invoice_info_context
+from zeitlabs_payments.providers.registry import PROCESSORS, available_processors, get_processor
 from zeitlabs_payments.serializers import CartSerializer
+from zeitlabs_payments.validators import validate_payment_origin
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -46,7 +61,7 @@ class CheckoutView(LoginRequiredMixin, TemplateView):
         if cart:
             methods = [
                 processor.get_payment_method_metadata(cart)
-                for processor in PROCESSORS.values()
+                for processor in available_processors(self.request)
             ]
             cart = CartSerializer(cart, context={'request': self.request}).data
 
@@ -58,11 +73,59 @@ class CheckoutView(LoginRequiredMixin, TemplateView):
         )
         return context
 
+    def inflight_payment_response(self, request: Any, inflight_payment: InFlightPayment) -> HttpResponse:
+        """
+        Answer a learner buying a course whose earlier payment is still open, as the payment was resolved.
+
+        They go back to that payment's waiting page when it can be resumed, are told to wait while it may still go
+        through, and are refused when nothing can be concluded about it -- never offered a second payment for it.
+        """
+        if inflight_payment.resolution == Resolution.RESUME:
+            return redirect(inflight_payment.waiting_page_url)
+        if inflight_payment.resolution == Resolution.IN_PROGRESS:
+            return render(
+                request,
+                'zeitlabs_payments/payment_in_progress.html',
+                {
+                    'merchant_reference': inflight_payment.cart.gateway_order_id,
+                    **waiting_time(inflight_payment.retry_after),
+                },
+            )
+        return render(
+            request,
+            'zeitlabs_payments/invalid_cart.html',
+            {'error_message': _(
+                'A payment for this course is still awaiting confirmation. Please contact support before paying again.'
+            )},
+            status=400,
+        )
+
     def get(self, request: Any, *args: Any, **kwargs: Any) -> None:
         """
-        Checkout View. If SKU provided create a new cart otherwise render last pending cart of user.
+        Checkout View. If SKU provided create a new cart otherwise render the last pending cart of the user.
+
+        Only one SKU is accepted per checkout URL. A request that names more than one is
+        refused and renders the invalid-cart page so the learner knows this is the design, not an error.
         """
-        sku_code = request.GET.get('sku')
+        sku_codes = request.GET.getlist('sku')
+        if len(sku_codes) > 1:
+            logger.error(
+                'Multi-SKU checkout URL refused: SKUs=%s user=%s',
+                sku_codes,
+                request.user,
+            )
+            return render(
+                request,
+                'zeitlabs_payments/invalid_cart.html',
+                {
+                    'error_message': _(
+                        'This product accepts one item per purchase. '
+                        'Please complete each purchase separately.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        sku_code = sku_codes[0] if sku_codes else ''
         if sku_code:
             try:
                 catalog_item = models.CatalogueItem.objects.get(sku=sku_code)
@@ -70,7 +133,7 @@ class CheckoutView(LoginRequiredMixin, TemplateView):
                 return render(
                     request,
                     'zeitlabs_payments/invalid_cart.html',
-                    {'error_message': f'Item with sku: {sku_code} does not exist.'},
+                    {'error_message': _('Item with sku: %(sku)s does not exist.') % {'sku': sku_code}},
                     status=404
                 )
 
@@ -79,11 +142,11 @@ class CheckoutView(LoginRequiredMixin, TemplateView):
                 return render(
                     request,
                     'zeitlabs_payments/invalid_cart.html',
-                    {'error_message': f'Item has unsupported type: {catalog_item.type}.'},
+                    {'error_message': _('Item has unsupported type: %(type)s.') % {'type': catalog_item.type}},
                     status=400
                 )
             try:
-                cart = handler.validate_item_and_create_cart(request.user, catalog_item)
+                cart, inflight_payment = create_cart_resolving_inflight_payments(handler, request.user, catalog_item)
             except InvalidCartError as exc:
                 return render(
                     request,
@@ -91,6 +154,8 @@ class CheckoutView(LoginRequiredMixin, TemplateView):
                     {'error_message': str(exc)},
                     status=400
                 )
+            if inflight_payment is not None:
+                return self.inflight_payment_response(request, inflight_payment)
         else:
             cart = (
                 models.Cart.objects.filter(user=request.user, status=models.Cart.Status.PENDING)
@@ -100,6 +165,42 @@ class CheckoutView(LoginRequiredMixin, TemplateView):
 
         context = self.get_context_data(cart=cart)
         return self.render_to_response(context)
+
+
+@lru_cache(maxsize=None)
+def _view_function(dotted_path: str) -> Any:
+    """Return the view function of the view class at the dotted path, made once."""
+    return import_string(dotted_path).as_view()
+
+
+def _processor_view(slug: str, attribute: str) -> Any:
+    """
+    Return the view function of the processor's view the attribute names, or raise Http404.
+
+    :param slug: The processor's SLUG, from the path.
+    :param attribute: ``RETURN_VIEW`` or ``STATUS_VIEW``.
+    :raises Http404: When no processor has the slug, or it names no such view.
+    """
+    dotted_path = getattr(PROCESSORS.get(slug), attribute, None)
+    if not dotted_path:
+        raise Http404(f'No {attribute.lower().replace("_", " ")} for payment provider {slug!r}.')
+    return _view_function(dotted_path)
+
+
+# The two routes every processor's views are mounted on. The exemptions are made here because Django reads them from
+# the view the URL resolves to, not from the processor's view called inside it: a gateway posting the learner back
+# cannot carry this site's CSRF token, and both views write records that must be committed whatever follows.
+@csrf_exempt
+@db_transaction.non_atomic_requests
+def processor_return_view(request: Any, slug: str) -> HttpResponse:
+    """Serve the processor's return view, where its gateway sends the learner back to wait for the payment."""
+    return _processor_view(slug, 'RETURN_VIEW')(request)
+
+
+@db_transaction.non_atomic_requests
+def processor_status_view(request: Any, slug: str) -> HttpResponse:
+    """Serve the processor's status view, which the waiting page polls."""
+    return _processor_view(slug, 'STATUS_VIEW')(request)
 
 
 class InitiatePaymentView(LoginRequiredMixin, View):
@@ -112,6 +213,20 @@ class InitiatePaymentView(LoginRequiredMixin, View):
     def get(self, request: Any, provider: str, cart_id: str) -> Any:
         """
         Initiate the payment by calling the appropriate processor.
+
+        A processor hidden for the request is refused as an unknown one is, before the cart is touched: hiding is how a
+        processor limits who may pay with it, and typing its address must not get round that. One that raises while
+        deciding counts as hidden, as in ``registry.available_processors``, so a broken check fails closed instead of
+        offering the processor to everyone.
+
+        Only a pending cart is handed off. It is moved to processing before the gateway is called, so of two requests
+        for the same cart -- a double click, or this URL replayed from the browser history -- only the first reaches the
+        gateway, and a cart already paid is never offered for payment again. A hand-off that raises closes the cart
+        instead of leaving it processing, since the learner was never sent anywhere; they start a new cart to pay.
+
+        The move records the origin the learner pays on, which the cart's invoice is issued on. An unusable one --
+        a site whose domain is misconfigured -- refuses the hand-off, so the learner is not charged for a payment no
+        invoice could be issued for.
 
         :param request: Django request object
         :param provider: The payment provider slug
@@ -126,6 +241,15 @@ class InitiatePaymentView(LoginRequiredMixin, View):
             return HttpResponseBadRequest(f'Error: {str(exc)}')
 
         try:
+            hidden = processor.is_hidden_for(request)
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.exception(f'Failed to decide whether payment provider {provider} is hidden; treating it as hidden.')
+            hidden = True
+        if hidden:
+            logger.error(f'Payment provider {provider} is not offered to user {request.user}; refusing it.')
+            return HttpResponseBadRequest(f'Error: Unsupported payment provider: {provider}')
+
+        try:
             cart = processor.get_cart(cart_id)
         except InvalidCartError as exc:
             logger.error(f'Cart not found with id: {cart_id} - {exc}')
@@ -137,29 +261,49 @@ class InitiatePaymentView(LoginRequiredMixin, View):
                 f'Error: User {request.user} attempted to access cart belonging to {cart.user}.'
             )
 
-        payment_view = processor.payment_view(
-            cart=cart,
-            request=request,
-            use_client_side_checkout=False,
-        )
+        payment_origin = f'{request.scheme}://{request.site.domain}'
+        try:
+            validate_payment_origin(payment_origin)
+        except ValidationError as exc:
+            logger.error(f'Cart {cart.id} not handed off to {provider}: {exc.message}')
+            return HttpResponseBadRequest(f'Error: Cart {cart.id} cannot be paid on this site.')
 
-        cart.status = models.Cart.Status.PROCESSING
-        cart.save(update_fields=['status'])
-
-        models.AuditLog.log(
-            action=models.AuditLog.AuditActions.CART_STATUS_UPDATED,
-            cart=cart,
-            context={
-                'old_status': models.Cart.Status.PENDING,
-                'new_status': models.Cart.Status.PROCESSING,
-            }
-        )
+        try:
+            cart.change_status(
+                models.Cart.Status.PROCESSING,
+                processor=processor,
+                fields={'gateway': processor.SLUG, 'payment_origin': payment_origin},
+            )
+        except CartStatusError as exc:
+            logger.warning(f'Cart {cart.id} not handed off to {provider}: {exc}')
+            return HttpResponseBadRequest(f'Error: Cart {cart.id} is {cart.status}; only a pending cart can be paid.')
         logger.info(f'Cart {cart.id} status updated to {models.Cart.Status.PROCESSING}')
+
+        try:
+            payment_view = processor.payment_view(
+                cart=cart,
+                request=request,
+                use_client_side_checkout=False,
+            )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.exception(f'Cart {cart.id} could not be handed off to {provider}.')
+            try:
+                cart.change_status(
+                    models.Cart.Status.CLOSED,
+                    processor=processor,
+                    action=models.AuditLog.AuditActions.PAYMENT_HANDOFF_FAILED,
+                    context={'error': f'{type(exc).__name__}: {exc}'},
+                )
+            except CartStatusError as close_exc:
+                # Another request moved the cart while the gateway was being called. Its status is that request's to
+                # keep; the learner was still never sent to the gateway, so they get the error page all the same.
+                logger.warning(f'Cart {cart.id} was not closed after its failed hand-off to {provider}: {close_exc}')
+            return render(request, 'zeitlabs_payments/payment_error.html', {'retry_url': retry_url_for(cart)})
 
         models.AuditLog.log(
             action=models.AuditLog.AuditActions.REDIRECT_TO_PAYMENT,
             cart=cart,
-            gateway=processor.SLUG,
+            processor=processor,
             context={}
         )
         return payment_view
@@ -202,10 +346,40 @@ class CartView(APIView):
             "sku": "courseSS101",
         }
 
+        Only one SKU is accepted per request. A request that names more than one is refused in
+        the existing JSON error shape so the API surface stays unchanged.
+
         :param request: HTTP request with SKU in data
         :return: Serialized cart data with HTTP 201 status or error response
         """
-        sku_code = request.data.get('sku')
+        if hasattr(request.data, 'getlist'):
+            sku_codes = request.data.getlist('sku')
+        else:
+            sku_value = request.data.get('sku')
+            if isinstance(sku_value, list):
+                sku_codes = sku_value
+            elif sku_value:
+                sku_codes = [sku_value]
+            else:
+                sku_codes = []
+
+        if len(sku_codes) > 1:
+            logger.error(
+                'Multi-SKU cart-add request refused: SKUs=%s user=%s',
+                sku_codes,
+                request.user,
+            )
+            return Response(
+                {
+                    'error': (
+                        'This product accepts one item per purchase. '
+                        'Please complete each purchase separately.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        sku_code = sku_codes[0] if sku_codes else ''
 
         if not sku_code:
             logger.warning('POST to CartView missing SKU in request data')
@@ -231,7 +405,7 @@ class CartView(APIView):
             )
 
         try:
-            cart = handler.validate_item_and_create_cart(request.user, catalog_item)
+            cart, inflight_payment = create_cart_resolving_inflight_payments(handler, request.user, catalog_item)
         except InvalidCartError as exc:
             return Response(
                 {
@@ -240,9 +414,39 @@ class CartView(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if inflight_payment is not None:
+            return inflight_payment_json_response(inflight_payment)
         serializer = CartSerializer(cart, context={'request': request})
         logger.info(f'Cart created for user {request.user} with SKU {sku_code}')
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+def inflight_payment_json_response(inflight_payment: InFlightPayment) -> Response:
+    """
+    Answer an API request to buy a course whose earlier payment is still open, as the payment was resolved.
+
+    A payment that can be resumed or may still go through is answered 409, naming it: with the waiting page to send
+    the learner to, or the time after which buying again is allowed. One nothing can be concluded about is refused in
+    the error shape every other refusal uses.
+    """
+    if inflight_payment.resolution == Resolution.RESUME:
+        return Response(
+            {'outcome': 'payment_in_progress', 'redirect_url': inflight_payment.waiting_page_url},
+            status=status.HTTP_409_CONFLICT,
+        )
+    if inflight_payment.resolution == Resolution.IN_PROGRESS:
+        retry_after = inflight_payment.retry_after.isoformat() if inflight_payment.retry_after else None
+        return Response(
+            {'outcome': 'payment_in_progress', 'retry_after': retry_after},
+            status=status.HTTP_409_CONFLICT,
+        )
+    return Response(
+        {
+            'error': 'Given SKU item does not match add to cart requirements',
+            'details': 'A payment for this course is still awaiting confirmation.',
+        },
+        status=status.HTTP_400_BAD_REQUEST,
+    )
 
 
 class PaymentErrorView(TemplateView):
@@ -258,55 +462,175 @@ class PaymentErrorView(TemplateView):
         return render(request, self.template_name, context)
 
 
+def retry_url_for(cart: Optional[models.Cart]) -> Optional[str]:
+    """
+    Return the checkout address that starts a new cart for the cart's item, or None when there is none to retry.
+
+    A retry is a new attempt, never the old cart reused: the old cart ended, and its gateway order with it.
+    """
+    item = cart.items.select_related('catalogue_item').first() if cart else None
+    if item is None:
+        return None
+    return f"{reverse('zeitlabs_payments:checkout')}?{urlencode({'sku': item.catalogue_item.sku})}"
+
+
 class PaymentDeclineView(TemplateView):
-    """Render the template that shows the error message to the user when the payment handling is failed."""
+    """
+    Render the page a declined or cancelled payment ends on, offering a new attempt for the same item.
+
+    The ``cancelled`` query parameter picks the wording for a payment the learner cancelled rather than one refused
+    for them. The retry is offered only for a cart of the learner's own that the reference names, so a reference
+    seen elsewhere offers nothing.
+    """
 
     template_name = 'zeitlabs_payments/payment_decline.html'
 
     def get(self, request: Any, *args: Any, **kwargs: Any) -> Any:
         """Handle the GET request."""
+        gateway_order_id = args[0]
+        cart = None
+        if request.user.is_authenticated:
+            cart = (
+                models.Cart.objects.filter(user=request.user, gateway_order_id=gateway_order_id)
+                .order_by('-created_at')
+                .first()
+            )
         context = {
-            'merchant_reference': args[0],
-            'test': 'abcd hello'
+            'merchant_reference': gateway_order_id,
+            'cancelled': bool(request.GET.get('cancelled')),
+            'retry_url': retry_url_for(cart),
         }
         return render(request, self.template_name, context)
 
 
-class PaymentSuccessView(TemplateView):
-    """Render the template that shows the error message to the user when the payment handling is failed."""
+class PaymentReconciliationView(TemplateView):
+    """
+    Render the page shown when a payment was not completed and must not be retried.
 
-    template_name = 'zeitlabs_payments/payment_successful.html'
+    Two cases reach it. Money has moved but the enrolment could not be completed, or the payment has not been confirmed
+    yet and may still go through. Either way a retry could charge the learner twice, so the page offers none. The
+    ``unconfirmed`` query parameter picks the second wording; it only changes what the page says. The merchant reference
+    is required by the route because it is the only thing the learner can quote to support.
+    """
+
+    template_name = 'zeitlabs_payments/payment_reconciliation.html'
 
     def get(self, request: Any, *args: Any, **kwargs: Any) -> Any:
         """Handle the GET request."""
         context = {
             'merchant_reference': args[0],
+            'unconfirmed': bool(request.GET.get('unconfirmed')),
         }
         return render(request, self.template_name, context)
 
 
-class InvoiceView(LoginRequiredMixin, TemplateView):
-    """Render Invoice with given invoice number."""
+def build_invoice_context(invoice: models.Invoice, request: Any) -> dict:
+    """
+    Build the context an invoice renders from, shared by the private and the public view.
+
+    :param invoice: The invoice being rendered.
+    :param request: The request rendering it.
+    :returns: The template context.
+    """
+    return {
+        'invoice': invoice,
+        'payment_method': invoice.related_transaction.gateway,
+        'currency': invoice.currency,
+        **get_invoice_info_context(invoice, get_current_site(request)),
+    }
+
+
+def _host_key(netloc: str) -> tuple[Optional[str], Optional[int]]:
+    """
+    Return the host and any port other than a default one, which is what tells two hosts apart however they are spelled.
+
+    A host is the same in capitals or not, and with or without the default port written out.
+
+    :param netloc: A host, with or without a port: an origin's netloc, or a request's host.
+    """
+    parts = urlsplit(f'//{netloc}')
+    return parts.hostname, parts.port if parts.port not in (80, 443) else None
+
+
+def redirect_to_issuing_site(invoice: models.Invoice, request: Any) -> Optional[HttpResponse]:
+    """
+    Return a redirect to the same address on the site the invoice was issued on, or None when the request is there.
+
+    What an invoice shows about the organization is read for the site serving the page, and which site that is, is up
+    to whoever types the address. Serving an invoice only on the site its cart was paid on keeps the two the same. An
+    invoice whose cart was paid before origins were recorded has no site to send anyone to, and is served wherever it
+    is asked for.
+
+    The origin and the request are compared by ``_host_key``: a site whose domain is spelled with capitals, or with a
+    default port, would otherwise redirect to itself on every request, since the browser asks for the host without
+    either.
+
+    :param invoice: The invoice being shown, already known to be one the caller may see.
+    :param request: The request showing it.
+    """
+    payment_origin = invoice.cart.payment_origin
+    if not payment_origin or _host_key(urlsplit(payment_origin).netloc) == _host_key(request.get_host()):
+        return None
+    return redirect(urljoin(payment_origin, request.get_full_path()))
+
+
+class InvoiceView(TemplateView):
+    """
+    Render an invoice to its owner, addressed by invoice number.
+
+    This address is printed inside QR codes on copies already in learners' hands, so it keeps resolving for
+    the owner indefinitely. Everyone else -- including whoever scans one of those older codes -- gets the page
+    explaining that the address is private. Answering anonymous callers rather than redirecting them to a
+    login form leaves a scanned QR on that explanation instead of on a sign-in page they have no account for.
+
+    An invoice the caller may not see and an invoice that does not exist answer identically. Telling the two
+    apart would confirm which numbers are live, and the series runs sequentially.
+    """
+
+    template_name = 'zeitlabs_payments/invoice.html'
+    private_template_name = 'zeitlabs_payments/invoice_private.html'
+
+    def get(self, request: Any, *args: Any, **kwargs: Any) -> Any:
+        """Handle the GET request."""
+        invoice = None
+        if request.user.is_authenticated:
+            filters = {'invoice_number': args[0]}
+            if not request.user.is_superuser:
+                filters['cart__user'] = request.user
+            invoice = models.Invoice.objects.filter(**filters).first()
+
+        if invoice is None:
+            response = render(request, self.private_template_name, status=410)
+            response['Cache-Control'] = 'no-store'
+            return response
+
+        # Only once the caller may see the invoice: a redirect names the site it was issued on, which would tell a
+        # caller who may not that the number is live.
+        site_redirect = redirect_to_issuing_site(invoice, request)
+        if site_redirect:
+            return site_redirect
+        return render(request, self.template_name, build_invoice_context(invoice, request))
+
+
+class PublicInvoiceView(TemplateView):
+    """
+    Render an invoice to whoever holds its token.
+
+    The token is unguessable, so holding it is the whole permission: someone handed a printed copy can check
+    it against this page without an account, which is what the QR code on it is for. Admitting that an unknown
+    token has no invoice gives nothing away, so a missing one is an ordinary 404 here.
+    """
 
     template_name = 'zeitlabs_payments/invoice.html'
 
     def get(self, request: Any, *args: Any, **kwargs: Any) -> Any:
         """Handle the GET request."""
-        invoice_number = args[0]
-        filters = {'invoice_number': invoice_number}
-        if not request.user.is_superuser:
-            filters['cart__user'] = request.user
-        invoice = get_object_or_404(models.Invoice, **filters)
+        invoice = get_object_or_404(models.Invoice, public_token=kwargs['token'])
+        site_redirect = redirect_to_issuing_site(invoice, request)
+        if site_redirect:
+            return site_redirect
 
-        payment_method = 'manual'
-        if getattr(invoice, 'related_transaction', None):
-            payment_method = invoice.related_transaction.gateway
-
-        context = {
-            'invoice': invoice,
-            'payment_method': payment_method,
-            'organization': get_settings().organization,
-            'tax_number': get_settings().customer_number,
-            'currency': get_currency(invoice.cart)
-        }
-        return render(request, self.template_name, context)
+        response = render(request, self.template_name, build_invoice_context(invoice, request))
+        # The token addresses the invoice, so it must not ride a Referer header out to whatever this page links to.
+        response['Referrer-Policy'] = 'no-referrer'
+        return response

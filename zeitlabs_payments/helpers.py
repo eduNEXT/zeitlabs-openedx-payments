@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import urljoin
 
+import qrcode
+import qrcode.image.svg
 from common.djangoapps.course_modes.models import CourseMode
 from common.djangoapps.student.models import (
     AlreadyEnrolledError,
@@ -15,13 +16,22 @@ from common.djangoapps.student.models import (
     CourseFullError,
     EnrollmentClosedError,
 )
-from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.utils.safestring import mark_safe
+from django.utils.timezone import now
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
-from openedx.core.djangoapps.site_configuration import helpers as configuration_helpers
 
-from zeitlabs_payments.exceptions import DuplicateCartError, GatewayError
-from zeitlabs_payments.models import AuditLog, Cart, CartItem, CatalogueItem, Invoice
+from zeitlabs_payments.exceptions import (
+    CartStatusError,
+    ConfigurationError,
+    CurrencyMismatchError,
+    DuplicateCartError,
+    GatewayError,
+    InFlightPaymentError,
+)
+from zeitlabs_payments.models import AuditLog, Cart, CartItem, CatalogueItem, InvoiceNumberSequence
+from zeitlabs_payments.settings_service import get_settings
+from zeitlabs_payments.validators import canonical_currency, is_supported_currency, is_valid_invoice_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -31,55 +41,6 @@ VALID_PATTERNS = {
     'customer_name': r"[^A-Za-z _\\/\-\.']",
 }
 MAX_ORDER_DESCRIPTION_LENGTH_DEFAULT = 150
-
-
-@dataclass
-class ZeitLabsPluginSettings:
-    """Dataclass to hold ZeitLabs Payments plugin settings."""
-
-    @staticmethod
-    def get_by_root_key(key: str, default: Any = None) -> Any:
-        """Retrieve a setting by root key with a default value."""
-        return configuration_helpers.get_value(
-            key,
-            getattr(settings, key, default),
-        )
-
-    @staticmethod
-    def get_by_zeitlabs_key(key: str, default: Any) -> Any:
-        """Retrieve a setting by key with a default value."""
-        site_settings = ZeitLabsPluginSettings.get_by_root_key('ZEITLABS_PAYMENTS_SETTINGS') or {}
-        return site_settings.get(key, default)
-
-    invoice_prefix: str = field(
-        default_factory=lambda: ZeitLabsPluginSettings.get_by_zeitlabs_key('invoice_prefix', '')
-    )
-    organization: str = field(
-        default_factory=lambda: ZeitLabsPluginSettings.get_by_zeitlabs_key('organization', '')
-    )
-    customer_number: str = field(
-        default_factory=lambda: ZeitLabsPluginSettings.get_by_zeitlabs_key('customer_number', '')
-    )
-    is_payments_enabled: bool = field(
-        default_factory=lambda: ZeitLabsPluginSettings.get_by_root_key('IS_ZEITLABS_PAYMENTS_ENABLED', False)
-    )
-    valid_currency: str = field(
-        default_factory=lambda: ZeitLabsPluginSettings.get_by_zeitlabs_key('valid_currency', '!!!')
-    )
-    root_url: str = field(
-        default_factory=lambda: ZeitLabsPluginSettings.get_by_root_key(
-            'LMS_ROOT_URL',
-            ZeitLabsPluginSettings.get_by_root_key(
-                'ECOMMERCE_PUBLIC_URL_ROOT',
-                'ZeitLabs Payments: neither LMS_ROOT_URL nor ECOMMERCE_PUBLIC_URL_ROOT is set!'
-            )
-        )
-    )
-
-
-def get_settings() -> ZeitLabsPluginSettings:
-    """Retrieve ZeitLabs Payments plugin settings."""
-    return ZeitLabsPluginSettings()
 
 
 def verify_param(param: Any, param_name: str, required_type: Any) -> None:
@@ -100,18 +61,30 @@ def verify_param(param: Any, param_name: str, required_type: Any) -> None:
 
 def get_currency(cart: Cart) -> str:
     """
-    Return the currency for the given cart.
+    Return the deployment currency for the given cart.
+
+    A deployment trades in one currency, so this returns the configured one rather than any item's own. The
+    per-item comparison stays as a guard on rows written before that rule was enforced at save time: a valid save
+    can no longer produce a mismatch, but a seeded or migrated database can still hold one.
 
     :param cart: The shopping cart instance.
     :type cart: Cart
-    :raises Exception: If any item in the cart has a currency other than the valid currency.
-    :return: The valid currency code.
+    :raises ConfigurationError: If the deployment currency is not a supported currency.
+    :raises CurrencyMismatchError: If any item's currency is not the deployment currency.
+    :return: The valid currency code, in its canonical uppercase form.
     :rtype: str
     """
-    valid_currency = get_settings().valid_currency
+    configured = get_settings().valid_currency
+    if not is_supported_currency(configured):
+        raise ConfigurationError(
+            f"ZeitLabs Payments: 'valid_currency' is not set to a supported ISO 4217 currency "
+            f'(currently {configured!r}).'
+        )
+    valid_currency = canonical_currency(configured)
     for item in cart.items.all():
-        if item.catalogue_item.currency and item.catalogue_item.currency != valid_currency:
-            raise Exception(f'Currency not supported: {item.catalogue_item.currency}')
+        item_currency = item.catalogue_item.currency
+        if item_currency and item_currency.upper() != valid_currency:
+            raise CurrencyMismatchError(f'Currency not supported: {item_currency}')
     return valid_currency
 
 
@@ -256,24 +229,60 @@ def get_merchant_reference(site_id: int, cart: Cart) -> str:
     return f'{site_id}-{cart.id}'
 
 
+def learner_holds_mode(user: get_user_model, course_mode: CourseMode) -> bool:
+    """
+    Return whether the learner is enrolled in the mode's course, in that very mode, and the enrolment is active.
+
+    Open edX keeps one enrolment per learner and course, so a learner holding the mode already has what buying it would
+    give them: there is nothing to enrol them in.
+
+    :param user: The learner.
+    :param course_mode: The course mode bought.
+    :return: Whether the learner holds the mode, in an active enrolment.
+    """
+    mode, is_active = CourseEnrollment.enrollment_mode_for_user(user, course_mode.course.id)
+    return bool(is_active) and mode == course_mode.mode_slug
+
+
 def check_user_enroll_conditions(user: get_user_model, course_mode: CourseMode) -> None:
     """
-    Check whether a user can enroll in the given course mode.
+    Check whether a user can buy the given course mode: enrol in it, or upgrade to it from a free mode.
 
-    This function validates:
-    - If enrollment for the course is closed.
-    - If the course has reached its maximum capacity.
-    - If the user is already enrolled.
-
-    Raises an appropriate exception if any condition is not met.
+    - No one buys a mode past its ``expiration_datetime``, which is when Open edX stops enrolling in it.
+    - A learner enrolled in a mode Open edX lets upgrade -- audit or honor -- upgrades. They hold a seat already, so
+      whether the course's enrolment is closed, or the course full, does not stop them.
+    - A learner enrolled in any other mode, the one bought included, is refused.
+    - Anyone else enrols, which needs the course's enrolment open and the course not full.
 
     :param user: The user attempting to enroll.
     :param course_mode: The course mode of the course to check.
-    :raises EnrollmentClosedError: If enrollment for the course is closed.
+    :raises EnrollmentClosedError: If the mode has closed, or enrollment for the course is closed.
     :raises CourseFullError: If the course has reached its maximum allowed enrollments.
-    :raises AlreadyEnrolledError: If the user is already enrolled in the course.
+    :raises AlreadyEnrolledError: If the user is already enrolled in the course, in a mode they cannot upgrade from.
     :return: None
     """
+    expiration = course_mode.expiration_datetime
+    if expiration is not None and expiration <= now():
+        logger.warning(
+            'User %s failed to buy mode %s of course %s, which closed on %s.',
+            user.username,
+            course_mode.mode_slug,
+            str(course_mode.course.id),
+            expiration,
+        )
+        raise EnrollmentClosedError(f'The {course_mode.mode_slug} mode closed on {expiration:%Y-%m-%d}.')
+
+    if CourseEnrollment.is_enrolled(user, course_mode.course.id):
+        mode, _ = CourseEnrollment.enrollment_mode_for_user(user, course_mode.course.id)
+        if CourseMode.is_mode_upgradeable(mode):
+            return
+        logger.warning(
+            'User %s attempted to enroll in %s, but they were already enrolled',
+            user.username,
+            str(course_mode.course.id)
+        )
+        raise AlreadyEnrolledError('User is already enrolled in the course.')
+
     if CourseEnrollment.is_enrollment_closed(user, course_mode.course):
         logger.warning(
             'User %s failed to enroll in course %s because enrollment is closed.',
@@ -290,35 +299,38 @@ def check_user_enroll_conditions(user: get_user_model, course_mode: CourseMode) 
             user.username,
         )
         raise CourseFullError('Course is Full.')
-    if CourseEnrollment.is_enrolled(user, course_mode.course.id):
-        logger.warning(
-            'User %s attempted to enroll in %s, but they were already enrolled',
-            user.username,
-            str(course_mode.course.id)
+
+
+def generate_invoice_number() -> str:
+    """
+    Reserve and return the next invoice number for the configured prefix.
+
+    This resolves what the deployment's prefix is and refuses an unusable one; reserving the number itself
+    belongs to the counter and lives on ``InvoiceNumberSequence``.
+
+    The prefix is stripped and uppercased before use, so however the setting happens to be typed a deployment
+    issues one series rather than several near-identical ones. Each prefix carries its own counter, so changing
+    it opens a fresh series at 100001 -- or, if that prefix issued numbers before this counter existed, above
+    the highest of them.
+
+    :raises ConfigurationError: If ``invoice_prefix`` is unset, blank, or not a capitalized RFC 1123 label. An
+        unprefixed number would be a bare integer with nothing naming the series it belongs to, and one outside
+        that alphabet would not survive the places an invoice number travels, so both are refused here.
+    :returns: The reserved number as ``<PREFIX>-<digits>`` (e.g. ``'DEV-100002'``), everything after the dash
+        being numeric.
+    """
+    configured = get_settings().invoice_prefix
+    prefix = str(configured or '').strip().upper()
+    if not prefix:
+        raise ConfigurationError(
+            f"ZeitLabs Payments: 'invoice_prefix' is required and must not be blank (currently {configured!r}).",
         )
-        raise AlreadyEnrolledError('User is already enrolled in the course.')
-
-
-def generate_invoice_number(request: Any) -> str:
-    """
-    Generate a new unique invoice number with the given prefix.
-
-    :param prefix: The prefix string to prepend to the invoice number (e.g., 'DEV-').
-    :type prefix: str
-    :returns: A unique invoice number string with the given prefix (e.g., 'DEV-100002').
-    :rtype: str
-    """
-    prefix = get_settings().invoice_prefix
-    last_invoice = Invoice.objects.filter(invoice_number__startswith=prefix).order_by('-invoice_number').first()
-    if last_invoice and last_invoice.invoice_number:
-        try:
-            last_number = int(last_invoice.invoice_number.replace(prefix, '').replace('-', ''))
-            new_number = last_number + 1
-        except ValueError:
-            new_number = 100001
-    else:
-        new_number = 100001
-    return f'{prefix}-{new_number}'
+    if not is_valid_invoice_prefix(prefix):
+        raise ConfigurationError(
+            f"ZeitLabs Payments: 'invoice_prefix' must be letters, digits and inner hyphens, at most 63 "
+            f'characters (currently {configured!r}).',
+        )
+    return f'{prefix}-{InvoiceNumberSequence.reserve_next_for(prefix)}'
 
 
 def cancel_old_pending_carts(user: get_user_model) -> None:
@@ -335,48 +347,101 @@ def cancel_old_pending_carts(user: get_user_model) -> None:
         logger.debug(f'No pending carts to cancel for user {user}.')
         return
 
-    cart_ids = [cart.id for cart in pending_carts]
-    updated_count = Cart.objects.filter(id__in=cart_ids).update(status=Cart.Status.CANCELLED)
-    logger.debug(f'Cancelled {updated_count} pending cart(s) for user {user}.')
-
     for cart in pending_carts:
-        cart.refresh_from_db(fields=['status'])
-        AuditLog.log(
-            action=AuditLog.AuditActions.CART_STATUS_UPDATED,
-            cart=cart,
-            context={
-                'old_status': Cart.Status.PENDING,
-                'new_status': Cart.Status.CANCELLED,
-            }
+        try:
+            cart.change_status(Cart.Status.CANCELLED, action=AuditLog.AuditActions.CART_CANCELLED)
+        except CartStatusError as exc:
+            # Another request moved the cart out of pending since it was read -- handed it to a gateway, most likely.
+            # It is no longer an open cart, so it is not this function's to cancel.
+            logger.info(f'Pending cart {cart.id} of user {user} left as it is: {exc}')
+
+
+def check_carts_holding_item(user: get_user_model, catalogue_item: CatalogueItem) -> None:
+    """
+    Refuse the item while another of the learner's carts holding it blocks buying it, or send them back to its payment.
+
+    Every cart blocks except one whose status ``Cart.NON_BLOCKING_STATUSES`` lists. A cart holds the item when it holds
+    the same bundle or, for a course, any paid item of the same course: Open edX keeps one enrolment per learner and
+    course, so two paid modes of one course cannot both be fulfilled. A course and a bundle containing it never block
+    each other, since buying a course must never stop its learner buying a bundle that contains it.
+
+    A payment in flight -- processing or awaiting payment, with its gateway recorded -- is raised first, so the learner
+    can be sent back to it, told to wait, or let through once it expires. Any other blocking cart refuses the item.
+
+    :param user: The learner buying the item.
+    :param catalogue_item: The course or bundle being bought.
+    :raises InFlightPaymentError: When a blocking cart holding the item has its payment in flight, carrying the latest.
+    :raises DuplicateCartError: When any other blocking cart holds the item: paid, unreconciled, awaiting a refund, or
+        handed off without its gateway recorded.
+    :return: None
+    """
+    if catalogue_item.type == CatalogueItem.ItemType.PAID_COURSE:
+        holding_item = {
+            'items__catalogue_item__type': CatalogueItem.ItemType.PAID_COURSE,
+            'items__catalogue_item__item_ref_id': catalogue_item.item_ref_id,
+        }
+    else:
+        holding_item = {'items__catalogue_item': catalogue_item}
+    blocking_carts = Cart.objects.filter(user=user, **holding_item).exclude(status__in=Cart.NON_BLOCKING_STATUSES)
+
+    inflight_cart = blocking_carts.filter(
+        status__in=(Cart.Status.PROCESSING, Cart.Status.PAYMENT_PENDING), gateway__isnull=False,
+    ).order_by('-updated_at').first()
+    if inflight_cart:
+        raise InFlightPaymentError(
+            f'A payment for this item is still in flight in cart {inflight_cart.id} ({inflight_cart.status}).',
+            cart=inflight_cart,
         )
 
+    blocking_cart = blocking_carts.order_by('-updated_at').first()
+    if blocking_cart is None:
+        return
+    if blocking_cart.status == Cart.Status.PAID and blocking_cart.invoices.exists():
+        # TODO: implement the credit-note refund feature to allow refunding paid carts with invoices
+        raise DuplicateCartError(f'It was already bought in cart {blocking_cart.id}.')
+    raise DuplicateCartError(f'A payment for it in cart {blocking_cart.id} is still being resolved.')
 
-def check_duplicate_cart_with_item(
-    user: get_user_model,
-    course_mode: CourseMode,
-    status: str = None,
-    item_type: str = None
-) -> None:
+
+def describe_error(error: BaseException) -> str:
     """
-    Check if there is existing cart.
+    Name an error and every error behind it, outermost first, each by its class and its message.
 
-    Raise DuplicateCartError if user already has a cart (in given status)
-    containing an item with the same course.
+    The plugin raises its own errors from the ones it catches -- an enrolment Open edX refuses is raised again as a
+    fulfilment error -- so the outermost error names the step that failed, and the ones behind it say what to fix. An
+    error raised ``from None`` hides what it was raised from, and so does it here.
+
+    :param error: The error caught.
+    :return: Each error as ``ClassName: message``, or its class name alone when it has no message, joined by
+        ``, caused by``.
     """
-    if not status:
-        status = Cart.Status.PROCESSING
+    described = []
+    seen = set()
+    current: Optional[BaseException] = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = str(current)
+        described.append(f'{type(current).__name__}: {message}' if message else type(current).__name__)
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    return ', caused by '.join(described)
 
-    filters = {
-        'user': user,
-        'status': status,
-        'items__catalogue_item__item_ref_id': str(course_mode.course.id),
-    }
-    if item_type:
-        filters['items__catalogue_item__type'] = item_type
 
-    duplicate_cart = Cart.objects.filter(**filters).first()
+def generate_invoice_qr_code(receipt_url: Optional[str]) -> str:
+    """
+    Generate the receipt QR code as inline SVG for the given absolute receipt URL.
 
-    if duplicate_cart:
-        raise DuplicateCartError(
-            f'Duplicate cart found ID: {duplicate_cart.id}, state: {status}.'
-        )
+    The URL is settled against the domain recorded on the invoice when it was issued, never against the
+    request rendering it now: a printed receipt cannot be reissued, so the host the QR encodes has to be the
+    one it encoded the day it was printed. Invoices issued before the domain was recorded get no QR.
+
+    :param receipt_url: The absolute receipt URL to encode, or None for an invoice that has none.
+    :returns: The QR code as an inline SVG safe string, or an empty string when there is no URL.
+    """
+    if not receipt_url:
+        return ''
+
+    qr = qrcode.QRCode(image_factory=qrcode.image.svg.SvgPathImage)
+    qr.add_data(receipt_url)
+    qr.make(fit=True)
+    img = qr.make_image()
+
+    return mark_safe(img.to_string(encoding='unicode'))

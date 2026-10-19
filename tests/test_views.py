@@ -1,20 +1,31 @@
 """Test views for the zeitlabs_payments app"""
 
-from unittest.mock import patch
+import uuid
+from datetime import timedelta
+from decimal import Decimal
+from unittest.mock import call, patch
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.sites.models import Site
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
+from django.utils.timezone import now
 from rest_framework import status as http_status
 from rest_framework.test import APITestCase
+from waffle.testutils import override_switch
 
-from zeitlabs_payments.helpers import get_currency, get_settings
-from zeitlabs_payments.models import Cart, CatalogueItem, Invoice, Transaction
+from test_utils.dummy_processor import DummyProcessor
+from zeitlabs_payments.constants import DEFAULT_PAYMENT_SESSION_DURATION
+from zeitlabs_payments.exceptions import CartStatusError
+from zeitlabs_payments.models import AuditLog, Cart, CartItem, CatalogueItem, Invoice, InvoiceItem, Transaction
 from zeitlabs_payments.views import InitiatePaymentView
 
 User = get_user_model()
+
+PAYMENT_ORIGIN = 'https://learn.example.com'
+STORED_LEARNER_INFO = {'name': 'Layla Haddad'}
+STORED_ORGANIZATION_INFO = {'name': 'The Key Institute LLC', 'vat_no': '445566', 'cr_no': '7788'}
 
 
 class BaseTestViewMixin(APITestCase):
@@ -89,7 +100,7 @@ class CartViewTest(BaseTestViewMixin):
 
         # update cart status to paid
         user_cart.status = Cart.Status.PAID
-        user_cart.save()
+        user_cart.save(allow_status_change=True)
 
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
@@ -168,6 +179,77 @@ class CartViewTest(BaseTestViewMixin):
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data['error'], 'Item with given SKU has unsupported type: paid_course.')
 
+    def test_post_multiple_skus_returns_json_error(self):
+        """Verify that a multi-SKU cart-add request returns JSON 400, not HTML.
+
+        Both SKUs must appear in the error log for audit visibility, and no cart may be created.
+        The API keeps its existing `{'error': ...}` shape so third-party clients see no new field.
+        """
+        user = User.objects.get(id=self.learner1_id)
+        self.login_user(user)
+        with self.assertLogs('zeitlabs_payments.views', level='ERROR') as cm:
+            response = self.client.post(
+                self.url,
+                data='sku=custom-sku-1&sku=custom-sku-2',
+                content_type='application/x-www-form-urlencoded',
+            )
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+        self.assertIn('one item per purchase', response.data['error'])
+        log_text = '\n'.join(cm.output)
+        assert 'custom-sku-1' in log_text, 'Multi-SKU refusal must log the first SKU.'
+        assert 'custom-sku-2' in log_text, 'Multi-SKU refusal must log the second SKU.'
+        self.assertFalse(
+            Cart.objects.filter(user=user).exists(),
+            'A refused multi-SKU request must not create a cart.',
+        )
+
+    def test_post_single_sku_in_list_still_succeeds(self):
+        """Verify that the single-element list path is unchanged after the multi-SKU refusal."""
+        user = User.objects.get(id=self.learner1_id)
+        course_item = CatalogueItem.objects.get(sku='custom-sku-1')
+        self.login_user(user)
+        response = self.client.post(self.url, data={'sku': course_item.sku})
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(response.data['items'][0]['sku'], course_item.sku)
+
+    def test_post_sku_as_json_list_refuses_multi_sku(self):
+        """Verify that a JSON body with sku as a list is refused like a form-encoded multi-SKU body.
+
+        A list value is the JSON equivalent of repeating the key, and the same refusal must apply.
+        """
+        user = User.objects.get(id=self.learner1_id)
+        self.login_user(user)
+        carts_before = Cart.objects.filter(user=user).count()
+        response = self.client.post(
+            self.url,
+            data={'sku': ['custom-sku-1', 'custom-sku-2']},
+            format='json',
+        )
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+        self.assertIn('one item per purchase', response.data['error'])
+        self.assertFalse(
+            Cart.objects.filter(user=user).exists(),
+            'A refused multi-SKU request must not create a cart.',
+        )
+        self.assertEqual(Cart.objects.filter(user=user).count(), carts_before)
+
+    def test_post_json_scalar_sku_still_succeeds(self):
+        """Verify that a JSON body with a single sku string takes the dict branch unchanged."""
+        user = User.objects.get(id=self.learner1_id)
+        course_item = CatalogueItem.objects.get(sku='custom-sku-1')
+        self.login_user(user)
+        response = self.client.post(self.url, data={'sku': course_item.sku}, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(response.data['items'][0]['sku'], course_item.sku)
+
+    def test_post_json_missing_sku_returns_required_error(self):
+        """Verify that a JSON body without a sku hits the empty-dict branch and returns the existing error."""
+        user = User.objects.get(id=self.learner1_id)
+        self.login_user(user)
+        response = self.client.post(self.url, data={'something-else': 'x'}, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['error'], 'SKU is required')
+
     @patch(
         'zeitlabs_payments.helpers.CourseEnrollment.is_enrolled'
     )
@@ -231,7 +313,449 @@ class InitiatePaymentViewTest(TestCase):
         self.cart.refresh_from_db()
         self.assertEqual(self.cart.status, Cart.Status.PROCESSING)
 
+    def test_returns_400_if_provider_hidden_for_user(self):
+        """
+        Verify that a processor hidden for the user is refused as an unknown one is, leaving the cart untouched.
 
+        Hiding is how a processor limits who may pay with it. A processor that fakes payments for testers is the
+        sharpest case: anyone who could start a payment with it by typing its address would enrol for free.
+        """
+        self.client.force_login(self.user)
+        with patch.object(DummyProcessor, 'is_hidden_for', return_value=True):
+            with self.assertLogs('zeitlabs_payments.views', level='ERROR') as logs:
+                response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 400, 'A processor hidden for the user must be refused')
+        self.assertIn(
+            b'Unsupported payment provider', response.content,
+            'A processor hidden for the user must be refused as an unknown one is',
+        )
+        self.assertIn(
+            'Payment provider dummy is not offered to user user3', '\n'.join(logs.output),
+            'The refusal must be logged with the provider and the user',
+        )
+        self.cart.refresh_from_db()
+        self.assertEqual(self.cart.status, Cart.Status.PENDING, 'A refused payment must leave the cart pending')
+        self.assertFalse(
+            AuditLog.objects.filter(cart=self.cart).exists(),
+            'A refused payment must record nothing against the cart',
+        )
+
+    def test_returns_400_if_provider_fails_to_decide_whether_it_is_hidden(self):
+        """
+        Verify that a processor whose hide check raises is refused as a hidden one is, and the failure is logged.
+
+        The checkout page already leaves such a processor out, so a broken check must not leave its address open.
+        """
+        self.client.force_login(self.user)
+        with patch.object(DummyProcessor, 'is_hidden_for', side_effect=RuntimeError('flag lookup failed')):
+            with self.assertLogs('zeitlabs_payments.views', level='ERROR') as logs:
+                response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 400, 'A processor that cannot decide must be refused')
+        self.assertIn(
+            b'Unsupported payment provider', response.content,
+            'A processor that cannot decide must be refused as an unknown one is',
+        )
+        self.assertIn(
+            'RuntimeError: flag lookup failed', '\n'.join(logs.output),
+            'The failure must be logged with its traceback',
+        )
+        self.cart.refresh_from_db()
+        self.assertEqual(self.cart.status, Cart.Status.PENDING, 'A refused payment must leave the cart pending')
+        self.assertFalse(
+            AuditLog.objects.filter(cart=self.cart).exists(),
+            'A refused payment must record nothing against the cart',
+        )
+
+    def test_successful_payment_view_initiation_if_provider_visible_for_user(self):
+        """
+        Verify that a processor offered to the user still initiates the payment.
+
+        The processor is asked about this very request, since who may pay with it is decided per learner.
+        """
+        request = RequestFactory().get(self.url)
+        request.user = self.user
+        request.site = Site.objects.get_current()
+        with patch.object(DummyProcessor, 'is_hidden_for', return_value=False) as is_hidden_for:
+            InitiatePaymentView.as_view()(request, self.provider, self.cart.id)
+
+        self.assertEqual(
+            is_hidden_for.call_args_list, [call(request)],
+            'The processor must be asked whether it is hidden for this request',
+        )
+        self.cart.refresh_from_db()
+        self.assertEqual(
+            self.cart.status, Cart.Status.PROCESSING,
+            'A processor offered to the user must initiate the payment',
+        )
+
+    def test_hand_off_records_the_gateway_and_the_payment_origin(self):
+        """
+        Verify that a cart handed off is processing, and records the gateway it was handed to and the origin it is paid
+        on: the scheme of the request and the domain of its site.
+        """
+        request = RequestFactory().get(self.url, secure=True)
+        request.user = self.user
+        request.site = Site.objects.create(name='learn', domain='learn.example.com')
+
+        InitiatePaymentView.as_view()(request, self.provider, self.cart.id)
+
+        self.cart.refresh_from_db()
+        self.assertEqual(
+            (self.cart.status, self.cart.gateway, self.cart.payment_origin),
+            (Cart.Status.PROCESSING, 'dummy', 'https://learn.example.com'),
+            'the handed-off cart does not know its gateway or the origin it is paid on',
+        )
+
+    def test_refuses_a_site_that_gives_no_usable_origin(self):
+        """
+        Verify that a site whose domain does not make a bare origin is refused before the gateway is called, and the
+        cart left pending.
+
+        Its invoice could not be issued on that origin, so the learner would be charged for a payment that ends without
+        an invoice.
+        """
+        request = RequestFactory().get(self.url, secure=True)
+        request.user = self.user
+        request.site = Site.objects.create(name='learn', domain='learn.example.com/lms')
+
+        with patch('test_utils.dummy_processor.DummyProcessor.payment_view') as payment_view:
+            with self.assertLogs('zeitlabs_payments.views', level='ERROR') as logs:
+                response = InitiatePaymentView.as_view()(request, self.provider, self.cart.id)
+
+        self.assertEqual(response.status_code, 400, 'a site with no usable origin was not refused')
+        self.assertIn(
+            "Payment origin 'https://learn.example.com/lms' must be a scheme and a host", '\n'.join(logs.output),
+            'the refusal does not say which origin was refused',
+        )
+        self.assertFalse(payment_view.called, 'the gateway was called for a payment no invoice could be issued for')
+        self.cart.refresh_from_db()
+        self.assertEqual(
+            (self.cart.status, self.cart.payment_origin), (Cart.Status.PENDING, None),
+            'the refused cart was moved',
+        )
+
+    def test_refuses_a_cart_that_is_not_pending(self):
+        """
+        Verify that a cart in any status but pending is refused before the gateway is called, and left as it is.
+
+        A processing cart is one a first request has already handed off -- a double click, say -- and a paid one is
+        what replaying this URL from the browser history after paying reaches. Either way, a second gateway order would
+        be opened for a cart that has one.
+        """
+        self.client.force_login(self.user)
+        for cart_status in (
+            Cart.Status.PROCESSING, Cart.Status.PAYMENT_PENDING, Cart.Status.PAID, Cart.Status.CANCELLED,
+        ):
+            with self.subTest(cart_status=cart_status):
+                Cart.objects.filter(pk=self.cart.pk).update(status=cart_status)
+
+                with patch('test_utils.dummy_processor.DummyProcessor.payment_view') as payment_view:
+                    response = self.client.get(self.url)
+
+                self.assertEqual(response.status_code, 400, f'a {cart_status} cart was not refused')
+                self.assertIn(
+                    f'is {cart_status}; only a pending cart can be paid'.encode(), response.content,
+                    'the refusal does not say why',
+                )
+                self.assertFalse(payment_view.called, f'the gateway was called for a {cart_status} cart')
+                self.cart.refresh_from_db()
+                self.assertEqual(self.cart.status, cart_status, f'a {cart_status} cart was moved')
+
+    def test_failed_hand_off_closes_the_cart(self):
+        """
+        Verify that a hand-off that raises closes the cart, records the failure, and records no redirect.
+
+        The learner was never sent to the gateway, so the cart cannot be paid and must not look like a payment in
+        flight. It is closed rather than reopened, so it is never handed off again; the learner starts a new cart.
+        """
+        self.client.force_login(self.user)
+
+        with patch(
+            'test_utils.dummy_processor.DummyProcessor.payment_view', side_effect=TimeoutError('no answer'),
+        ):
+            response = self.client.get(self.url)
+
+        self.assertTemplateUsed(response, 'zeitlabs_payments/payment_error.html')
+        self.cart.refresh_from_db()
+        self.assertEqual(self.cart.status, Cart.Status.CLOSED, 'the cart of a failed hand-off was not closed')
+        self.assertEqual(
+            list(AuditLog.objects.filter(cart=self.cart).order_by('id').values_list('action', flat=True)),
+            [AuditLog.AuditActions.CART_STATUS_UPDATED, AuditLog.AuditActions.PAYMENT_HANDOFF_FAILED],
+            'the trail does not show the hand-off claimed and then failed, without a redirect',
+        )
+
+    def test_failed_hand_off_on_a_cart_moved_meanwhile_still_reaches_the_error_page(self):
+        """
+        Verify that a hand-off failing after another request moved the cart leaves the cart as that request left it,
+        and still answers with the error page rather than a server error.
+
+        The gateway is called after the cart is claimed, so a request running alongside -- the learner buying the course
+        again in another tab, say -- can move the cart before the failure is known. Closing it then is refused.
+        """
+        self.client.force_login(self.user)
+
+        def expire_then_fail(**kwargs):
+            Cart.objects.filter(pk=self.cart.pk).update(status=Cart.Status.EXPIRED)
+            raise TimeoutError('no answer')
+
+        with patch('test_utils.dummy_processor.DummyProcessor.payment_view', side_effect=expire_then_fail):
+            with self.assertLogs('zeitlabs_payments.views', level='WARNING') as logs:
+                response = self.client.get(self.url)
+
+        self.assertTemplateUsed(response, 'zeitlabs_payments/payment_error.html')
+        self.assertIn(
+            f'Cart {self.cart.id} was not closed after its failed hand-off', '\n'.join(logs.output),
+            'the refused close is not logged',
+        )
+        self.cart.refresh_from_db()
+        self.assertEqual(self.cart.status, Cart.Status.EXPIRED, 'the cart was not left as the other request left it')
+        self.assertFalse(
+            AuditLog.objects.filter(cart=self.cart, action=AuditLog.AuditActions.PAYMENT_HANDOFF_FAILED).exists(),
+            'a close that did not happen is on the trail',
+        )
+
+    def test_failed_hand_off_offers_a_new_cart_for_the_same_item(self):
+        """
+        Verify that the error page after a failed hand-off retries with a new cart for the item, not the closed cart.
+        """
+        item = CatalogueItem.objects.get(sku='custom-sku-1')
+        self.cart.items.create(catalogue_item=item, original_price=item.price, final_price=item.price)
+        self.client.force_login(self.user)
+
+        with patch('test_utils.dummy_processor.DummyProcessor.payment_view', side_effect=TimeoutError('no answer')):
+            response = self.client.get(self.url)
+
+        self.assertContains(
+            response,
+            f'href="{reverse("zeitlabs_payments:checkout")}?sku=custom-sku-1"',
+            msg_prefix='the error page does not retry with a new cart for the item',
+        )
+        self.assertContains(response, 'Try Again', msg_prefix='the retry is not offered')
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures('base_data')
+class DeclinePageTest(TestCase):
+    """The page a declined or cancelled payment ends on."""
+
+    def setUp(self):
+        self.user = User.objects.get(id=3)
+        item = CatalogueItem.objects.get(sku='custom-sku-1')
+        cart = Cart.objects.create(
+            user=self.user, status=Cart.Status.CANCELLED, gateway='dummy', gateway_order_id='ORDER-1',
+        )
+        cart.items.create(catalogue_item=item, original_price=item.price, final_price=item.price)
+        self.url = reverse('zeitlabs_payments:payment-decline', args=['ORDER-1'])
+        self.retry = f'href="{reverse("zeitlabs_payments:checkout")}?sku=custom-sku-1"'
+
+    def test_a_declined_payment_is_told_so_and_offered_a_new_attempt(self):
+        """Verify that a declined payment is worded as declined, with nothing charged, and retried with a new cart."""
+        self.client.force_login(self.user)
+
+        response = self.client.get(self.url)
+
+        self.assertContains(response, 'Payment Declined', msg_prefix='the decline is not worded as one')
+        self.assertContains(response, 'Nothing was charged', msg_prefix='the learner is not told nothing was charged')
+        self.assertContains(response, self.retry, msg_prefix='no new attempt is offered for the item')
+        self.assertNotContains(response, 'history.back()', msg_prefix='the retry still goes back to the waiting page')
+
+    def test_a_cancelled_payment_is_not_called_declined(self):
+        """Verify that a payment the learner cancelled is worded as cancelled, and offered a new attempt too."""
+        self.client.force_login(self.user)
+
+        response = self.client.get(self.url, {'cancelled': '1'})
+
+        self.assertContains(response, 'Payment Cancelled', msg_prefix='the cancellation is not worded as one')
+        self.assertNotContains(response, 'Payment Declined', msg_prefix='a cancellation is called a decline')
+        self.assertContains(response, self.retry, msg_prefix='no new attempt is offered for the item')
+
+    def test_a_reference_that_is_not_the_learners_offers_no_retry(self):
+        """
+        Verify that only the learner's own cart is retried from its reference, and anyone else is sent to the courses.
+
+        The reference is in the address, so it can be read or guessed: it must not reveal what another learner bought.
+        """
+        for who, log_in in (('another learner', lambda: self.client.force_login(User.objects.get(id=4))),
+                            ('nobody logged in', self.client.logout)):
+            with self.subTest(who=who):
+                log_in()
+
+                response = self.client.get(self.url)
+
+                self.assertNotContains(response, 'sku=custom-sku-1', msg_prefix=f'{who} was offered the cart\'s item')
+                self.assertContains(
+                    response, f'href="{reverse("courses")}"', msg_prefix=f'{who} was not sent to the courses',
+                )
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures('base_data')
+class ProcessorRoutesTest(TestCase):
+    """The routes the plugin mounts every processor's return and status views on."""
+
+    def test_a_slug_naming_no_processor_is_not_found(self):
+        """Verify that a return or status route for a slug no processor has answers 404."""
+        for name in ('zeitlabs_payments:processor-return', 'zeitlabs_payments:processor-status'):
+            with self.subTest(route=name):
+                response = self.client.get(reverse(name, args=['no-such-processor']))
+
+                self.assertEqual(response.status_code, 404, f'{name} served a processor that does not exist')
+
+    def test_a_processor_naming_no_view_has_none_mounted(self):
+        """Verify that a processor naming no return view has nothing served at its return route."""
+        with patch.object(DummyProcessor, 'RETURN_VIEW', None):
+            response = self.client.get(reverse('zeitlabs_payments:processor-return', args=['dummy']))
+
+        self.assertEqual(response.status_code, 404, 'a return view was served for a processor naming none')
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures('base_data')
+class InFlightPaymentOnBuyingAgainTest(TestCase):
+    """Buying a course again, from the checkout page and the cart API, while an earlier payment for it is open."""
+
+    def setUp(self):
+        self.user = User.objects.get(id=3)
+        self.item = CatalogueItem.objects.get(sku='custom-sku-1')
+        self.checkout_url = f"{reverse('zeitlabs_payments:checkout')}?sku={self.item.sku}"
+        self.cart_url = reverse('zeitlabs_payments:cart-add')
+        self.client.force_login(self.user)
+
+    def inflight_cart(self, status=Cart.Status.PROCESSING, gateway_order_id=None, age=timedelta(0)):
+        """Return the learner's cart for the course, handed to the dummy gateway the given time ago."""
+        cart = Cart.objects.create(
+            user=self.user, status=status, gateway='dummy', gateway_order_id=gateway_order_id,
+        )
+        cart.items.create(catalogue_item=self.item, original_price=self.item.price, final_price=self.item.price)
+        Cart.objects.filter(pk=cart.pk).update(updated_at=now() - age)
+        return cart
+
+    def test_checkout_sends_the_learner_back_to_a_payment_that_can_be_resumed(self):
+        """Verify that checkout sends the learner to the waiting page of the payment already open, making no cart."""
+        self.inflight_cart(gateway_order_id='ORDER-1')
+
+        response = self.client.get(self.checkout_url)
+
+        self.assertRedirects(
+            response, f'{DummyProcessor().get_return_url()}?orderId=ORDER-1', fetch_redirect_response=False,
+        )
+        self.assertEqual(Cart.objects.filter(user=self.user).count(), 1, 'a second cart was made')
+
+    def test_checkout_asks_the_learner_to_wait_for_a_payment_in_progress(self):
+        """
+        Verify that checkout tells the learner a payment is in progress, and roughly when they may try again.
+
+        The wait is worded in hours from an hour up, in minutes below it, and as later when the session's end is not
+        known.
+        """
+        cart = self.inflight_cart(gateway_order_id='ORDER-1')
+        no_waiting_page = patch.object(DummyProcessor, 'RETURN_VIEW', None)
+        no_waiting_page.start()
+        self.addCleanup(no_waiting_page.stop)
+        cases = [
+            (timedelta(minutes=25), 'try again in about 24 hours'),
+            (DEFAULT_PAYMENT_SESSION_DURATION - timedelta(minutes=5), 'try again in about 5 minutes'),
+        ]
+        for age, wording in cases:
+            with self.subTest(age=age):
+                Cart.objects.filter(pk=cart.pk).update(updated_at=now() - age)
+
+                response = self.client.get(self.checkout_url)
+
+                self.assertTemplateUsed(response, 'zeitlabs_payments/payment_in_progress.html')
+                self.assertContains(response, wording, msg_prefix='the time to wait is not given')
+                self.assertContains(response, 'ORDER-1', msg_prefix='the payment in progress has no reference')
+
+        with patch.object(DummyProcessor, 'get_session_end', return_value=None):
+            response = self.client.get(self.checkout_url)
+        self.assertContains(response, 'try again later', msg_prefix='an unknown wait is not worded as later')
+
+    def test_checkout_makes_the_cart_once_an_abandoned_payment_expired(self):
+        """Verify that checkout expires an abandoned payment past its session and goes on to the new cart."""
+        abandoned = self.inflight_cart(age=timedelta(hours=25))
+
+        response = self.client.get(self.checkout_url)
+
+        self.assertTemplateUsed(response, 'zeitlabs_payments/checkout.html')
+        self.assertNotEqual(response.context['cart']['id'], abandoned.id, 'the abandoned cart was offered again')
+        abandoned.refresh_from_db()
+        self.assertEqual(abandoned.status, Cart.Status.EXPIRED, 'the abandoned cart did not expire')
+
+    def test_checkout_refuses_while_nothing_can_be_concluded_about_a_payment(self):
+        """Verify that checkout refuses a learner whose earlier payment was answered about but cannot be asked again."""
+        self.inflight_cart(status=Cart.Status.PAYMENT_PENDING, age=timedelta(hours=25))
+
+        response = self.client.get(self.checkout_url)
+
+        self.assertEqual(response.status_code, 400, 'a payment nothing can be concluded about was not refused')
+        self.assertContains(
+            response, 'still awaiting confirmation', status_code=400, msg_prefix='the refusal does not say why',
+        )
+
+    def test_api_names_the_waiting_page_of_a_payment_that_can_be_resumed(self):
+        """Verify that the cart API answers 409 with the waiting page of the payment already open."""
+        self.inflight_cart(gateway_order_id='ORDER-1')
+
+        response = self.client.post(self.cart_url, data={'sku': self.item.sku})
+
+        self.assertEqual(
+            (response.status_code, response.json()),
+            (
+                409,
+                {
+                    'outcome': 'payment_in_progress',
+                    'redirect_url': f'{DummyProcessor().get_return_url()}?orderId=ORDER-1',
+                },
+            ),
+            'the in-flight payment was not named with its waiting page',
+        )
+
+    def test_api_names_when_to_retry_a_payment_in_progress(self):
+        """Verify that the cart API answers 409 with the time after which buying again is allowed."""
+        cart = self.inflight_cart(age=timedelta(minutes=10))
+        cart.refresh_from_db()
+
+        response = self.client.post(self.cart_url, data={'sku': self.item.sku})
+
+        self.assertEqual(
+            (response.status_code, response.json()),
+            (409, {
+                'outcome': 'payment_in_progress',
+                'retry_after': (cart.updated_at + DEFAULT_PAYMENT_SESSION_DURATION).isoformat(),
+            }),
+            'the payment in progress was not named with the time to retry',
+        )
+
+    def test_api_names_no_retry_time_when_it_is_not_known(self):
+        """Verify that the cart API answers 409 without a time when the payment's state changed as it was checked."""
+        self.inflight_cart(age=timedelta(hours=25))
+
+        with patch.object(Cart, 'change_status', side_effect=CartStatusError('moved by another request')):
+            response = self.client.post(self.cart_url, data={'sku': self.item.sku})
+
+        self.assertEqual(
+            (response.status_code, response.json()),
+            (409, {'outcome': 'payment_in_progress', 'retry_after': None}),
+            'a payment moved meanwhile was not reported in progress',
+        )
+
+    def test_api_refuses_while_nothing_can_be_concluded_about_a_payment(self):
+        """Verify that the cart API refuses, in its usual error shape, a payment nothing can be concluded about."""
+        self.inflight_cart(status=Cart.Status.PAYMENT_PENDING, age=timedelta(hours=25))
+
+        response = self.client.post(self.cart_url, data={'sku': self.item.sku})
+
+        self.assertEqual(response.status_code, 400, 'a payment nothing can be concluded about was not refused')
+        self.assertEqual(
+            response.json()['details'], 'A payment for this course is still awaiting confirmation.',
+            'the refusal does not say why',
+        )
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures('base_data')
 class CheckoutViewTests(TestCase):
     """Checkout View Test."""
     VIEW_NAME = 'zeitlabs_payments:checkout'
@@ -244,8 +768,8 @@ class CheckoutViewTests(TestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 302)
 
-    @patch('zeitlabs_payments.views.PROCESSORS', {})
-    def test_checkout_view_context_without_cart(self):
+    @patch('zeitlabs_payments.views.available_processors', return_value=[])
+    def test_checkout_view_context_without_cart(self, mock_available_processors):  # pylint: disable=unused-argument
         self.client.force_login(self.user)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
@@ -308,6 +832,52 @@ class CheckoutViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_checkout_view_with_multiple_skus_renders_invalid_cart_page(self):
+        """Verify that a multi-SKU checkout URL renders the invalid-cart page with status 400.
+
+        Both SKUs must appear in the error log for audit visibility, and no cart may be created.
+        The single-SKU path is left untouched by this test.
+        """
+        self.client.force_login(self.user)
+        with self.assertLogs('zeitlabs_payments.views', level='ERROR') as cm:
+            response = self.client.get(f'{self.url}?sku=custom-sku-1&sku=custom-sku-2')
+        self.assertTemplateUsed(response, 'zeitlabs_payments/invalid_cart.html')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('one item per purchase', response.context['error_message'])
+        log_text = '\n'.join(cm.output)
+        assert 'custom-sku-1' in log_text, 'Multi-SKU refusal must log the first SKU.'
+        assert 'custom-sku-2' in log_text, 'Multi-SKU refusal must log the second SKU.'
+        self.assertFalse(
+            Cart.objects.filter(user=self.user).exists(),
+            'A refused multi-SKU request must not create a cart.',
+        )
+
+    def test_checkout_view_with_single_sku_in_list_still_succeeds(self):
+        """Verify that the single-element list path is unchanged after the multi-SKU refusal."""
+        self.client.force_login(self.user)
+        response = self.client.get(f'{self.url}?sku=custom-sku-1')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context['cart']['items']), 1)
+        self.assertEqual(response.context['cart']['items'][0]['sku'], 'custom-sku-1')
+
+    def test_checkout_renders_money_through_format_price(self):
+        """Verify checkout HTML uses currency-exponent precision, not the money-column storage scale."""
+        self.client.force_login(self.user)
+        catalogue_item = CatalogueItem.objects.get(sku='custom-sku-1')
+        cart = Cart.objects.create(user=self.user, status=Cart.Status.PENDING)
+        CartItem.objects.create(
+            cart=cart,
+            catalogue_item=catalogue_item,
+            original_price=Decimal('45.000'),
+            final_price=Decimal('45.000'),
+        )
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '45.00')
+        self.assertNotContains(response, '45.000')
+
 
 @pytest.mark.django_db
 @pytest.mark.usefixtures('base_data')
@@ -316,34 +886,318 @@ class InvoiceViewTest(BaseTestViewMixin):
 
     VIEW_NAME = 'zeitlabs_payments:invoice'
 
+    def setUp(self):
+        """Ask for invoices on the site they are issued on here, unless a test says otherwise."""
+        super().setUp()
+        self.client.defaults['HTTP_HOST'] = 'learn.example.com'
+
     def test_get_success(self):
         """
-        Verify the invoice page shows correct context when invoice has no related transaction.
+        Verify that the receipt carries the invoice, the gateway that took the payment, and the learner and
+        organization info stored on it.
         """
         user = User.objects.get(id=3)
         self.login_user(user)
-        cart = Cart.objects.create(user=user, status=Cart.Status.PAID)
+        cart = Cart.objects.create(user=user, status=Cart.Status.PAID, payment_origin=PAYMENT_ORIGIN)
+        transaction = Transaction.objects.create(
+            cart=cart, amount=100, gateway='payfort', gateway_transaction_id='TX-111'
+        )
         invoice = Invoice.objects.create(
+            status=Invoice.InvoiceStatus.PAID,
             cart=cart,
             invoice_number='TEST-111111',
             total=100,
             gross_total=100,
+            currency='SAR',
+            related_transaction=transaction,
+            learner_info=STORED_LEARNER_INFO,
+            organization_info=STORED_ORGANIZATION_INFO,
         )
         self.url_args = [invoice.invoice_number]
         response = self.client.get(self.url)
 
         assert response.status_code == 200
         assert response.context['invoice'].invoice_number == 'TEST-111111'
-        assert response.context['payment_method'] == 'manual'
-        assert response.context['organization'] == get_settings().organization
-        assert response.context['tax_number'] == get_settings().customer_number
-        assert response.context['currency'] == get_currency(cart)
+        assert response.context['payment_method'] == 'payfort', \
+            'The receipt names the gateway that took the payment'
+        assert response.context['learner_info'] == STORED_LEARNER_INFO, 'The receipt names someone else'
+        assert response.context['organization_info'] == STORED_ORGANIZATION_INFO, 'The receipt names another issuer'
+        assert response.context['currency'] == invoice.currency, \
+            'The receipt shows what the invoice recorded, not what the deployment is configured for now'
+
+    def test_receipt_formats_money_and_omits_vat_amount_ui(self):
+        """
+        Verify the receipt shows currency-exponent amounts and no VAT amount UI.
+
+        Storage may hold three decimals after the money-column widening; the receipt must still print
+        two for SAR. Tax amount fields may be non-zero on the model, but v1.0 does not name them on
+        the page — only seller identity (tax number) stays when configured.
+        """
+        user = User.objects.get(id=3)
+        self.login_user(user)
+        catalogue_item = CatalogueItem.objects.get(sku='custom-sku-1')
+        cart = Cart.objects.create(user=user, status=Cart.Status.PAID, payment_origin=PAYMENT_ORIGIN)
+        cart_item = CartItem.objects.create(
+            cart=cart,
+            catalogue_item=catalogue_item,
+            original_price=Decimal('99.000'),
+            final_price=Decimal('99.000'),
+        )
+        transaction = Transaction.objects.create(
+            cart=cart, amount=Decimal('99.000'), gateway='payfort', gateway_transaction_id='TX-FORMAT'
+        )
+        invoice = Invoice.objects.create(
+            status=Invoice.InvoiceStatus.PAID,
+            cart=cart,
+            invoice_number='TEST-FORMAT-99',
+            total=Decimal('99.000'),
+            gross_total=Decimal('99.000'),
+            tax_total=Decimal('5.00'),
+            currency='SAR',
+            related_transaction=transaction,
+        )
+        InvoiceItem.objects.create(
+            invoice=invoice,
+            cart_item=cart_item,
+            original_price=Decimal('99.000'),
+            price=Decimal('99.000'),
+            tax_amount=Decimal('5.00'),
+        )
+        self.url_args = [invoice.invoice_number]
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '99.00')
+        self.assertNotContains(response, '99.000')
+        self.assertNotContains(response, '>VAT<')
+
+    def _issue_invoice(self, invoice_number, payment_origin=PAYMENT_ORIGIN, **extra):
+        """Log a learner in and issue them one paid invoice, on a cart paid on the given origin, returning it."""
+        user = User.objects.get(id=3)
+        self.login_user(user)
+        cart = Cart.objects.create(user=user, status=Cart.Status.PAID, payment_origin=payment_origin)
+        transaction = Transaction.objects.create(
+            cart=cart, amount=100, gateway='payfort', gateway_transaction_id=f'TX-{invoice_number}',
+        )
+        return Invoice.objects.create(
+            status=Invoice.InvoiceStatus.PAID,
+            cart=cart,
+            invoice_number=invoice_number,
+            total=100,
+            gross_total=100,
+            currency='SAR',
+            related_transaction=transaction,
+            **extra,
+        )
+
+    def test_receipt_prints_the_parties_stored_at_issue(self):
+        """
+        Verify that the receipt prints the learner and organization info stored on the invoice: the learner's name,
+        and the organization's name, VAT number and CR number.
+        """
+        invoice = self._issue_invoice(
+            'TEST-555551', learner_info=STORED_LEARNER_INFO, organization_info=STORED_ORGANIZATION_INFO,
+        )
+        self.url_args = [invoice.invoice_number]
+
+        response = self.client.get(self.url)
+
+        for printed in (
+            'Layla Haddad', 'The Key Institute LLC', 'VAT No.: 445566', 'CR No.: 7788',
+        ):
+            self.assertContains(response, printed, msg_prefix=f'the receipt does not print {printed!r}')
+
+    def test_receipt_leaves_out_parties_it_has_nothing_stored_for(self):
+        """
+        Verify that an invoice with no info stored -- issued before it was, or whose function failed -- prints no
+        learner name and no organization block, rather than empty ones.
+        """
+        invoice = self._issue_invoice('TEST-555552')
+        self.url_args = [invoice.invoice_number]
+
+        response = self.client.get(self.url)
+
+        self.assertNotContains(response, 'Customer Name', msg_prefix='an empty learner name was printed')
+        self.assertNotContains(
+            response, '<div class="receipt-company-info">', msg_prefix='an empty organization block was printed',
+        )
+
+    def test_receipt_shows_live_info_while_the_switch_is_on(self):
+        """
+        Verify that while the switch is on, the receipt shows what the info functions answer now and ignores what the
+        invoice stored, so invoices issued before the info was stored still show their parties.
+        """
+        invoice = self._issue_invoice(
+            'TEST-555553', learner_info=STORED_LEARNER_INFO, organization_info=STORED_ORGANIZATION_INFO,
+        )
+        invoice.cart.user.first_name, invoice.cart.user.last_name = 'Omar', 'Saleh'
+        invoice.cart.user.save()
+        self.url_args = [invoice.invoice_number]
+
+        with override_switch('zeitlabs_payments.invoice.show_live_info', active=True):
+            response = self.client.get(self.url)
+
+        self.assertEqual(
+            (response.context['learner_info'], response.context['organization_info']),
+            (
+                {'name': 'Omar Saleh'},
+                {'name': 'test_org', 'vat_no': '112233'},
+            ),
+            'the receipt does not show the live info',
+        )
+
+    def test_invoice_asked_for_on_another_site_is_sent_to_its_own(self):
+        """
+        Verify that an invoice asked for on another site than the one it was issued on is redirected to the same
+        address on its own site, query included, rather than shown with the other site's organization.
+        """
+        invoice = self._issue_invoice('TEST-555554')
+        self.url_args = [invoice.invoice_number]
+
+        response = self.client.get(f'{self.url}?lang=ar', HTTP_HOST='other.example.com')
+
+        self.assertRedirects(
+            response, f'https://learn.example.com{self.url}?lang=ar', fetch_redirect_response=False,
+            msg_prefix='the invoice was not sent to the site it was issued on',
+        )
+
+    def test_invoice_is_shown_on_its_own_host_however_its_origin_spells_it(self):
+        """
+        Verify that an invoice whose origin spells its host in capitals, or with the default port, is shown on that host
+        rather than redirected to itself.
+
+        The browser asks for the host in lower case and without the default port, so comparing the spellings as written
+        would send every request for the invoice back to the address it came from.
+        """
+        for invoice_number, origin in (
+            ('TEST-555561', 'https://Learn.Example.com'),
+            ('TEST-555562', 'https://learn.example.com:443'),
+        ):
+            with self.subTest(origin=origin):
+                invoice = self._issue_invoice(invoice_number, payment_origin=origin)
+                self.url_args = [invoice.invoice_number]
+
+                response = self.client.get(self.url)
+
+                self.assertEqual(response.status_code, 200, f'the invoice issued on {origin} was not shown on its host')
+
+    def test_invoice_asked_for_on_another_port_is_sent_to_its_own(self):
+        """
+        Verify that an invoice issued on a port other than the default is redirected when asked for on another port of
+        the same host, since the two are different sites.
+        """
+        invoice = self._issue_invoice('TEST-555563', payment_origin='http://learn.example.com:18000')
+        self.url_args = [invoice.invoice_number]
+
+        response = self.client.get(self.url, HTTP_HOST='learn.example.com:8000')
+
+        self.assertRedirects(
+            response, f'http://learn.example.com:18000{self.url}', fetch_redirect_response=False,
+            msg_prefix='the invoice was not sent to the port it was issued on',
+        )
+
+    def test_invoice_the_caller_may_not_see_is_not_sent_to_its_site(self):
+        """
+        Verify that someone who may not see an invoice gets the private page on any site, never a redirect, which
+        would name the site the invoice was issued on and so confirm that its number is live.
+        """
+        invoice = self._issue_invoice('TEST-555555')
+        self.client.force_login(User.objects.get(id=self.learner2_id))
+        self.url_args = [invoice.invoice_number]
+
+        response = self.client.get(self.url, HTTP_HOST='other.example.com')
+
+        self.assertEqual(response.status_code, 410, 'another learner was not answered with the private page')
+        self.assertTemplateUsed(response, 'zeitlabs_payments/invoice_private.html')
+
+    def test_invoice_from_before_origins_were_recorded_is_shown_on_any_site(self):
+        """Verify that an invoice whose cart has no origin, and so names no site, is shown where it is asked for."""
+        invoice = self._issue_invoice('TEST-555556', payment_origin=None)
+        self.url_args = [invoice.invoice_number]
+
+        response = self.client.get(self.url, HTTP_HOST='other.example.com')
+
+        self.assertEqual(response.status_code, 200, 'an invoice with no recorded site was not shown')
+
+    def test_get_carries_no_receipt_url_while_the_cart_has_no_origin(self):
+        """
+        Verify that a receipt whose cart has no origin opens, but reaches the template with no receipt URL, so the QR
+        tag renders nothing.
+
+        A QR addressed on a guessed host would send a learner somewhere unrelated to their payment. Losing the QR is
+        the whole cost of an origin nobody recorded, and it is not allowed to cost the page as well.
+        """
+        invoice = self._issue_invoice('TEST-111113', payment_origin=None)
+        self.url_args = [invoice.invoice_number]
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(
+            response.context['invoice'].receipt_url,
+            'An invoice whose cart has no origin must reach the template with no URL to build a QR code from',
+        )
+        self.assertEqual(
+            response.context['invoice'].invoice_number, 'TEST-111113',
+            'The receipt must still render its invoice, only without the QR code',
+        )
+
+    def test_get_carries_a_receipt_url_on_the_recorded_origin_to_the_template(self):
+        """
+        Verify that the receipt URL reaching the template is built on the origin the invoice's cart was paid on.
+
+        Rebuilding it from the rendering request would print a different address than the paper copy issued
+        on the paying site.
+        """
+        invoice = self._issue_invoice('TEST-111112', payment_origin='https://paid-here.example.com')
+        self.url_args = [invoice.invoice_number]
+
+        response = self.client.get(self.url, HTTP_HOST='paid-here.example.com')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context['invoice'].receipt_url,
+            f'https://paid-here.example.com/payment/v2/invoice/{invoice.public_token}/',
+            'The receipt must be addressed on the origin the cart was paid on',
+        )
 
     def test_unauthorized(self):
-        """Verify that the view returns 302 when the user is not authenticated"""
+        """
+        Verify that an anonymous caller is answered with the explanation page, not redirected to a login form.
+
+        This address is what older printed QR codes encode, and whoever scans one has no account to sign in
+        with. A redirect would strand them on a form; the page tells them what to ask the owner for instead.
+        """
         self.url_args = ['does-not-matter']
+
         response = self.client.get(self.url)
-        self.assertEqual(response.status_code, 302)
+
+        self.assertEqual(response.status_code, 410, 'An anonymous caller must be answered, not redirected')
+        self.assertTemplateUsed(response, 'zeitlabs_payments/invoice_private.html')
+
+    def test_a_forbidden_invoice_is_indistinguishable_from_a_missing_one(self):
+        """
+        Verify that an invoice the caller may not see answers exactly as one that does not exist.
+
+        Invoice numbers run as a sequence, so a reply that told the two apart could be walked through the
+        series to learn which numbers are live and how many customers a deployment has.
+        """
+        invoice = self._issue_invoice('TEST-111114')
+        self.login_user(User.objects.get(id=2))
+
+        self.url_args = [invoice.invoice_number]
+        forbidden = self.client.get(self.url)
+        self.url_args = ['TEST-999999']
+        missing = self.client.get(self.url)
+
+        self.assertEqual(
+            forbidden.status_code, missing.status_code,
+            'An invoice withheld and an invoice absent must answer with the same status',
+        )
+        self.assertEqual(
+            forbidden.content, missing.content,
+            'A reply that differed would confirm which invoice numbers are live',
+        )
 
     def test_invoices_access(self):
         """
@@ -352,30 +1206,49 @@ class InvoiceViewTest(BaseTestViewMixin):
         - Normal users can only view their own
         """
         admin_user = User.objects.get(id=1)
-        admin_user_cart = Cart.objects.create(user=admin_user, status=Cart.Status.PAID)
+        admin_user_cart = Cart.objects.create(user=admin_user, status=Cart.Status.PAID, payment_origin=PAYMENT_ORIGIN)
         admin_user_invoice = Invoice.objects.create(
+            status=Invoice.InvoiceStatus.PAID,
             cart=admin_user_cart,
             invoice_number='TEST-111111',
             total=100,
-            gross_total=100
+            gross_total=100,
+            currency='SAR',
+            related_transaction=Transaction.objects.create(
+                cart=admin_user_cart, amount=100, gateway='dummy', gateway_transaction_id='TX-1'
+            )
         )
 
         normal_user1 = User.objects.get(id=2)
-        normal_user1_cart = Cart.objects.create(user=normal_user1, status=Cart.Status.PAID)
+        normal_user1_cart = Cart.objects.create(
+            user=normal_user1, status=Cart.Status.PAID, payment_origin=PAYMENT_ORIGIN,
+        )
         normal_user1_invoice = Invoice.objects.create(
+            status=Invoice.InvoiceStatus.PAID,
             cart=normal_user1_cart,
             invoice_number='TEST-22222',
             total=100,
-            gross_total=100
+            gross_total=100,
+            currency='SAR',
+            related_transaction=Transaction.objects.create(
+                cart=normal_user1_cart, amount=100, gateway='dummy', gateway_transaction_id='TX-2'
+            )
         )
 
         normal_user2 = User.objects.get(id=3)
-        normal_user2_cart = Cart.objects.create(user=normal_user2, status=Cart.Status.PAID)
+        normal_user2_cart = Cart.objects.create(
+            user=normal_user2, status=Cart.Status.PAID, payment_origin=PAYMENT_ORIGIN,
+        )
         normal_user2_invoice = Invoice.objects.create(
+            status=Invoice.InvoiceStatus.PAID,
             cart=normal_user2_cart,
             invoice_number='TEST-33333',
             total=200,
-            gross_total=200
+            gross_total=200,
+            currency='SAR',
+            related_transaction=Transaction.objects.create(
+                cart=normal_user2_cart, amount=200, gateway='dummy', gateway_transaction_id='TX-3'
+            )
         )
 
         self.url_args = [normal_user2_invoice.invoice_number]
@@ -395,58 +1268,195 @@ class InvoiceViewTest(BaseTestViewMixin):
         assert response.context['invoice'].invoice_number == normal_user1_invoice.invoice_number
         self.url_args = [normal_user2_invoice.invoice_number]
         response = self.client.get(self.url)
-        assert response.status_code == 404, "Normal user should not be able to access another user's invoice"
+        assert response.status_code == 410, "Normal user should not be able to access another user's invoice"
 
-    def test_get_success_with_related_transaction(self):
+    @override_settings(ZEITLABS_PAYMENTS_SETTINGS={'valid_currency': 'IQD'})
+    def test_get_uses_the_invoice_currency_not_the_configured_one(self):
         """
-        Verify the invoice page shows correct payment_method when invoice has a related transaction.
+        Verify that a receipt keeps the currency it was issued with after the deployment changes currency.
+
+        An issued invoice is a record of what was charged and is never recomputed from current configuration. A
+        deployment that switches currency holds two in its history, and re-rendering an old receipt in the new one
+        would restate a document already in a learner's hands -- silently, since every amount stays as it was.
         """
         user = User.objects.get(id=3)
         self.login_user(user)
-        cart = Cart.objects.create(user=user, status=Cart.Status.PAID)
+        cart = Cart.objects.create(user=user, status=Cart.Status.PAID, payment_origin=PAYMENT_ORIGIN)
         invoice = Invoice.objects.create(
+            status=Invoice.InvoiceStatus.PAID,
             cart=cart,
-            invoice_number='INV-222222',
+            invoice_number='TEST-333333',
             total=100,
-            gross_total=100
+            gross_total=100,
+            currency='SAR',
+            related_transaction=Transaction.objects.create(
+                cart=cart, amount=100, gateway='dummy', gateway_transaction_id='TX-1'
+            ),
         )
-
-        transaction = Transaction.objects.create(
-            cart=cart,
-            amount=cart.total,
-            gateway='payfort',
-            gateway_transaction_id='TX-222'
-        )
-        invoice.related_transaction = transaction
-        invoice.save()
-
         self.url_args = [invoice.invoice_number]
         response = self.client.get(self.url)
 
         assert response.status_code == 200
-        assert response.context['invoice'].invoice_number == 'INV-222222'
-        assert response.context['payment_method'] == 'payfort'
-        assert response.context['organization'] == get_settings().organization
-        assert response.context['tax_number'] == get_settings().customer_number
-        assert response.context['currency'] == get_currency(cart)
+        assert response.context['currency'] == 'SAR', \
+            'The receipt must show the currency charged, not the one the deployment moved to'
 
 
+@pytest.mark.django_db
 @pytest.mark.usefixtures('base_data')
-class PaymentSuccessViewTest(BaseTestViewMixin):
-    """Tests for PaymentErrorView"""
-    VIEW_NAME = 'zeitlabs_payments:payment-success'
+class PublicInvoiceViewTest(BaseTestViewMixin):
+    """Tests for PublicInvoiceView"""
 
-    def test_get_success(self):
+    VIEW_NAME = 'zeitlabs_payments:public-invoice'
+
+    def setUp(self):
+        """Ask for receipts on the site they are issued on here, unless a test says otherwise."""
+        super().setUp()
+        self.client.defaults['HTTP_HOST'] = 'learn.example.com'
+
+    def test_receipt_asked_for_on_another_site_is_sent_to_its_own(self):
         """
-        Verify that the view renders correctly and includes merchant_reference in the context.
+        Verify that a receipt opened by its token on another site than the one it was issued on is redirected to the
+        same address on its own site.
         """
-        merchant_reference = 'ORDER-98765'
-        self.url_args = [merchant_reference]
+        invoice = self._issue_invoice('TEST-444446')
+        self.url_args = [invoice.public_token]
+
+        response = self.client.get(self.url, HTTP_HOST='other.example.com')
+
+        self.assertRedirects(
+            response, f'https://learn.example.com{self.url}', fetch_redirect_response=False,
+            msg_prefix='the receipt was not sent to the site it was issued on',
+        )
+
+    def _issue_invoice(self, invoice_number):
+        """Issue one paid invoice to a learner, returning it."""
+        user = User.objects.get(id=self.learner1_id)
+        cart = Cart.objects.create(user=user, status=Cart.Status.PAID, payment_origin=PAYMENT_ORIGIN)
+        transaction = Transaction.objects.create(
+            cart=cart, amount=100, gateway='payfort', gateway_transaction_id=f'TX-{invoice_number}',
+        )
+        return Invoice.objects.create(
+            status=Invoice.InvoiceStatus.PAID,
+            cart=cart,
+            invoice_number=invoice_number,
+            total=100,
+            gross_total=100,
+            currency='SAR',
+            related_transaction=transaction,
+        )
+
+    def test_get_renders_the_invoice_without_an_account(self):
+        """
+        Verify that the invoice opens for a caller who is not logged in at all.
+
+        Holding the token is the whole permission. Whoever was handed the printed copy checks it here, and an
+        auditor has no account on the deployment that issued it.
+        """
+        invoice = self._issue_invoice('TEST-444444')
+        self.url_args = [invoice.public_token]
+
         response = self.client.get(self.url)
 
-        assert response.status_code == 200
-        assert 'merchant_reference' in response.context
-        assert response.context['merchant_reference'] == merchant_reference
+        self.assertEqual(response.status_code, 200, 'A token holder must reach the invoice without signing in')
+        self.assertEqual(
+            response.context['invoice'].invoice_number, 'TEST-444444',
+            'The public page must render the invoice its token addresses',
+        )
+
+    def test_get_carries_the_same_details_as_the_owner_sees(self):
+        """
+        Verify that the public page is built from the same details as the owner's own view.
+
+        A public copy that differed from the paper being checked against it would defeat the verification it
+        exists for.
+        """
+        invoice = self._issue_invoice('TEST-444445')
+        Invoice.objects.filter(pk=invoice.pk).update(
+            learner_info=STORED_LEARNER_INFO, organization_info=STORED_ORGANIZATION_INFO,
+        )
+        self.url_args = [invoice.public_token]
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(
+            response.context['payment_method'], 'payfort',
+            'The public page names the gateway that took the payment',
+        )
+        self.assertEqual(
+            (response.context['learner_info'], response.context['organization_info']),
+            (STORED_LEARNER_INFO, STORED_ORGANIZATION_INFO),
+            'The public page names other parties than the invoice stored',
+        )
+        self.assertEqual(
+            response.context['currency'], invoice.currency,
+            'The public page shows what the invoice recorded',
+        )
+
+    def test_get_forbids_sending_the_token_in_a_referrer(self):
+        """
+        Verify that the response forbids sending a referrer.
+
+        The token addresses the invoice, so letting it ride a Referer header out to whatever this page links
+        to would hand the capability to whoever received the request.
+        """
+        invoice = self._issue_invoice('TEST-444446')
+        self.url_args = [invoice.public_token]
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(
+            response['Referrer-Policy'], 'no-referrer',
+            'The token must not leave the page through a referrer header',
+        )
+
+    def test_get_malformed_token_is_not_found(self):
+        """
+        Verify that a token outside the canonical UUID shape is a 404 rather than a server error.
+
+        Such a token must not reach the lookup at all: the column parses its values as UUIDs and raises on
+        anything else, which surfaces as a 500. These URLs are built by hand because the route cannot produce
+        them -- refusing to reverse them is the same guarantee seen from the other side.
+        """
+        malformed = {
+            'a' * 36: 'hex characters with no hyphens at all',
+            '-' * 36: 'hyphens with no hex at all',
+            'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa': 'one character short of a token',
+        }
+
+        for token, usecase in malformed.items():
+            with self.subTest(usecase=usecase):
+                response = self.client.get(f'/payment/v2/invoice/{token}/')
+                self.assertEqual(response.status_code, 404, f'A malformed token must not resolve: {usecase}')
+
+    def test_get_refuses_a_non_canonical_spelling_of_a_real_token(self):
+        """
+        Verify that an invoice answers only at its token's canonical spelling.
+
+        ``uuid.UUID()`` drops hyphens wherever they fall, so many spellings parse to one token. Letting them all
+        resolve would put a single invoice behind a family of URLs, multiplying what reaches logs and referrers.
+        """
+        invoice = self._issue_invoice('TEST-444447')
+        aliased = str(invoice.public_token).replace('-', '') + '----'
+
+        response = self.client.get(f'/payment/v2/invoice/{aliased}/')
+
+        self.assertEqual(
+            response.status_code, 404,
+            'Only the canonical spelling of a token may reach its invoice',
+        )
+
+    def test_get_unknown_token_is_not_found(self):
+        """
+        Verify that a token addressing no invoice is an ordinary 404.
+
+        A token is unguessable, so admitting that one matches nothing gives away nothing worth withholding --
+        unlike the numbered address, whose series can be walked.
+        """
+        self.url_args = [uuid.uuid4()]
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 404, 'A token matching no invoice must not resolve')
 
 
 @pytest.mark.usefixtures('base_data')
@@ -483,3 +1493,53 @@ class PaymentDeclineViewTest(BaseTestViewMixin):
         assert response.status_code == 200
         assert 'merchant_reference' in response.context
         assert response.context['merchant_reference'] == merchant_reference
+        assert 'status-reference' in response.content.decode(), \
+            'The shared layout must carry the merchant reference'
+
+
+@pytest.mark.usefixtures('base_data')
+class PaymentReconciliationViewTest(BaseTestViewMixin):
+    """Tests for PaymentReconciliationView"""
+    VIEW_NAME = 'zeitlabs_payments:payment-reconciliation'
+
+    def test_get_reconciliation_carries_the_reference_and_no_retry(self):
+        """
+        Verify the reconciliation page carries the reference and offers no retry action.
+        """
+        merchant_reference = 'ORDER-98765'
+        self.url_args = [merchant_reference]
+        response = self.client.get(self.url)
+
+        assert response.status_code == 200
+        assert response.context['merchant_reference'] == merchant_reference
+        markup = response.content.decode()
+        assert 'ORDER-98765' in markup, 'The learner must be able to quote the reference'
+        assert 'Try Again' not in markup, 'The reconciliation page must not offer a retry action'
+
+    def test_a_charged_payment_is_told_it_was_received(self):
+        """
+        Verify that, by default, the page tells the learner their payment was received and not to pay again.
+
+        It is reached when the gateway took the money but the enrolment could not be completed.
+        """
+        self.url_args = ['ORDER-98765']
+
+        response = self.client.get(self.url)
+
+        self.assertContains(response, 'Payment Received', msg_prefix='a charged learner is not told it was received')
+        self.assertContains(response, 'Please do not pay again', msg_prefix='a charged learner is invited to pay again')
+        self.assertNotContains(response, 'Not Yet Confirmed', msg_prefix='a charged learner is told it is unconfirmed')
+
+    def test_an_unconfirmed_payment_is_not_told_it_was_received(self):
+        """
+        Verify that a payment not confirmed yet is not described as received, and the learner is told not to pay again.
+
+        It is reached when the waiting page stops polling a payment still pending, which may yet fail.
+        """
+        self.url_args = ['ORDER-98765']
+
+        response = self.client.get(self.url, {'unconfirmed': '1'})
+
+        self.assertContains(response, 'Payment Not Yet Confirmed', msg_prefix='the unconfirmed wording is not shown')
+        self.assertContains(response, 'Please do not pay again', msg_prefix='the learner is invited to pay again')
+        self.assertNotContains(response, 'Payment Received', msg_prefix='an unconfirmed payment is called received')

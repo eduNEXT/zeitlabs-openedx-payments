@@ -65,4 +65,10 @@ requirements/private.in
 requirements/private.txt
 
 # temporary tests migration files
-/test_utils/edx_platform_mocks_shared/fake_models/migrations/
+/test_utils/edx_platform_mocks/fake_models/migrations/
+
+# PII annotation report, written by the pii_check tox env
+/pii_report/
+
+# Jetbrains
+.idea/

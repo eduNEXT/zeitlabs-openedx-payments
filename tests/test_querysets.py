@@ -7,7 +7,7 @@ from django.db.models import Prefetch
 from django.utils import timezone
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
 
-from zeitlabs_payments.models import Cart, CartItem, CatalogueItem, Invoice
+from zeitlabs_payments.models import Cart, CartItem, CatalogueItem, Invoice, Transaction
 from zeitlabs_payments.querysets import get_orders_queryset
 
 User = get_user_model()
@@ -37,6 +37,9 @@ def test_get_orders_queryset_filters_and_prefetches_correctly(
     )
     paid_cart_item1 = Cart.objects.create(user=user, status=Cart.Status.PAID)
     CartItem.objects.create(cart=paid_cart_item1, catalogue_item=item1, final_price=100, original_price=100)
+    transaction = Transaction.objects.create(
+        cart=paid_cart_item1, amount=100, gateway='dummy', gateway_transaction_id='TX-1'
+    )
     Invoice.objects.create(
         cart=paid_cart_item1,
         invoice_number='INV001',
@@ -44,7 +47,8 @@ def test_get_orders_queryset_filters_and_prefetches_correctly(
         paid_at=None,
         status='paid',
         gross_total=100,
-        total=100
+        total=100,
+        related_transaction=transaction
     )
     pending_cart_item1 = Cart.objects.create(user=user, status=Cart.Status.PENDING)
     CartItem.objects.create(cart=pending_cart_item1, catalogue_item=item1, final_price=100, original_price=100)

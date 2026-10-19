@@ -1,0 +1,8 @@
+-c https://raw.githubusercontent.com/openedx/edx-platform/refs/heads/open-release/sumac.master/requirements/constraints.txt
+
+# edx-platform related requirements. Pinned to the versions used in Sumac.
+babel==2.16.0
+djangorestframework==3.14.0
+edx-django-utils==7.0.0
+edx-opaque-keys==2.11.0
+edx-toggles==5.2.0

@@ -8,14 +8,20 @@ on:
       - "**"
 
 jobs:
-  run_tests:
+  # The newest release and the quality checks run first; the older releases and the PII check run only once both have
+  # passed.
+  first_checks:
     name: tests
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest]
-        python-version: ["3.11"]
-        toxenv: [quality, redwood]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.12"
+            toxenv: py312-verawood
+          - os: ubuntu-latest
+            python-version: "3.12"
+            toxenv: quality
     steps:
       - uses: actions/checkout@v4
       - name: setup python
@@ -31,10 +37,39 @@ jobs:
           TOXENV: ${{ matrix.toxenv }}
         run: tox
 
-      # - name: Run coverage
-      #   if: matrix.python-version == '3.11' && matrix.toxenv == 'django42'
-      #   uses: codecov/codecov-action@v4
-      #   with:
-      #     token: ${{ secrets.CODECOV_TOKEN }}
-      #     flags: unittests
-      #     fail_ci_if_error: true
+  run_tests:
+    name: tests
+    needs: first_checks
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+            toxenv: py311-redwood
+          - os: ubuntu-latest
+            python-version: "3.11"
+            toxenv: py311-sumac
+          - os: ubuntu-latest
+            python-version: "3.11"
+            toxenv: py311-teak
+          - os: ubuntu-latest
+            python-version: "3.11"
+            toxenv: py311-ulmo
+          - os: ubuntu-latest
+            python-version: "3.12"
+            toxenv: pii_check
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Dependencies
+        run: pip install -r requirements/ci.in
+
+      - name: Run Tests
+        env:
+          TOXENV: ${{ matrix.toxenv }}
+        run: tox

@@ -6,13 +6,13 @@ import pytest
 from django.contrib.auth import get_user_model
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
 
-from zeitlabs_payments.models import Cart, CartItem, CatalogueItem, Invoice
+from zeitlabs_payments.models import Cart, CartItem, CatalogueItem, Invoice, Transaction
 from zeitlabs_payments.serializers import CartItemSerializer, CartSerializer, CourseSerializer
 
 
 @pytest.mark.django_db
 @patch('zeitlabs_payments.serializers.relative_url_to_absolute_url')
-def test_course_serializer_course_image_exception(mock_relative_url):
+def test_course_serializer_course_image_exception(mock_relative_url, base_data):  # pylint: disable=unused-argument
     course = CourseOverview.objects.get(id='course-v1:org1+1+1')
     mock_request = MagicMock(scheme='https', site=MagicMock(domain='example.com'))
     mock_relative_url.side_effect = ValueError('something went wrong')
@@ -94,13 +94,17 @@ def test_cart_serializer_for_include_invoice(base_data):  # pylint: disable=unus
         original_price=course_item.price,
         final_price=course_item.price
     )
+    transaction = Transaction.objects.create(
+        cart=cart, amount=cart.total, gateway='dummy', gateway_transaction_id='TX-1'
+    )
     invoice = Invoice.objects.create(
         cart=cart,
         gross_total=cart.total,
         total=cart.total,
         currency=course_item.currency,
         invoice_number='TEST-12345',
-        status=Invoice.InvoiceStatus.PAID
+        status=Invoice.InvoiceStatus.PAID,
+        related_transaction=transaction
     )
     # include_invoice is unset, invoice should not be returned in data
     serializer = CartSerializer(instance=cart)
@@ -119,7 +123,7 @@ def test_cart_serializer_for_include_invoice(base_data):  # pylint: disable=unus
     assert data['invoice']['paid_at'] == invoice.paid_at
 
     cart.status = Cart.Status.PENDING
-    cart.save()
+    cart.save(allow_status_change=True)
     invoice.delete()
 
     # include_invoice is set, invoice should be None for pending cart

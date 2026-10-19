@@ -1,0 +1,8 @@
+-c https://raw.githubusercontent.com/openedx/edx-platform/refs/heads/release/verawood/requirements/constraints.txt
+
+# edx-platform related requirements. Pinned to the versions used in Verawood.
+babel==2.18.0
+djangorestframework==3.17.1
+edx-django-utils==8.0.1
+edx-opaque-keys==3.0.0
+edx-toggles==6.0.0
