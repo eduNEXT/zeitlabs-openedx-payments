@@ -1,0 +1,43 @@
+{% extends "zeitlabs_payments/status_page.html" %}
+{% load i18n %}
+
+{% block status_icon_class %}warning{% endblock %}
+
+{% block status_icon %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <circle cx="12" cy="12" r="10"/>
+    <polyline points="12 6 12 12 16 14"/>
+</svg>
+{% endblock %}
+
+{% block status_title %}{% trans "Payment In Progress" %}{% endblock %}
+
+{% block status_content %}
+<p class="status-message">
+    {% trans "A payment for this course is already in progress." %}
+</p>
+<p class="status-message">
+    {% if hours %}
+    {% blocktrans count hours=hours trimmed %}
+        Please do not pay again. If it does not go through, you can try again in about {{ hours }} hour.
+    {% plural %}
+        Please do not pay again. If it does not go through, you can try again in about {{ hours }} hours.
+    {% endblocktrans %}
+    {% elif minutes %}
+    {% blocktrans count minutes=minutes trimmed %}
+        Please do not pay again. If it does not go through, you can try again in about {{ minutes }} minute.
+    {% plural %}
+        Please do not pay again. If it does not go through, you can try again in about {{ minutes }} minutes.
+    {% endblocktrans %}
+    {% else %}
+    {% trans "Please do not pay again. If it does not go through, you can try again later." %}
+    {% endif %}
+</p>
+{% endblock %}
+
+{# No retry action: paying again while this payment may still go through could charge the learner twice. #}
+{% block status_actions %}
+<a href="{% url 'dashboard' %}" class="btn btn-primary go-to-dashboard-button">
+    {% trans "Go to Dashboard" %}
+</a>
+{% endblock %}

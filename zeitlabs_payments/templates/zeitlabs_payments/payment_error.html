@@ -1,51 +1,36 @@
-{% extends "main_django.html" %}
+{% extends "zeitlabs_payments/status_page.html" %}
 {% load i18n %}
 
-{% block body %}
-<style>
-    .message-box {
-        font-family: Arial, sans-serif;
-        background: #fff;
-        padding: 2rem 3rem;
-        box-shadow: 0 0 10px rgba(0,0,0,0.1);
-        text-align: center;
-        border-radius: 8px;
-        max-width: 600px;
-        margin: 10vh auto;
-    }
-    .message-box h1 {
-        color: #d9534f;
-        margin-bottom: 1rem;
-    }
-    .message-box p {
-        margin-bottom: 1rem;
-    }
-    .message-box a {
-        display: inline-block;
-        padding: 0.5rem 1rem;
-        background-color: #d9534f;
-        color: #fff;
-        text-decoration: none;
-        border-radius: 4px;
-        margin-top: 1rem;
-    }
-    .message-box a:hover {
-        background-color: #c9302c;
-    }
-</style>
+{% block status_icon_class %}error{% endblock %}
 
-<div class="message-box">
-    <h1>{% trans "Something went wrong while fullfilling Payment" %}</h1>
-    <p>{% trans "We couldn’t process your transaction completely at this time." %}</p>
-    {% if merchant_reference %}
-        <p>
-            {% blocktrans with ref=merchant_reference %}
-                Your reference number is: {{ ref }}
-            {% endblocktrans %}
-        </p>
-    {% endif %}
+{% block status_icon %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <circle cx="12" cy="12" r="10"/>
+    <line x1="15" y1="9" x2="9" y2="15"/>
+    <line x1="9" y1="9" x2="15" y2="15"/>
+</svg>
+{% endblock %}
 
-    <p>{% trans "Contact us for further support." %}</p>
-    <a href="/contact-support">{% trans "Contact Support" %}</a>
-</div>
+{% block status_title %}{% trans "Payment Error" %}{% endblock %}
+
+{% block status_content %}
+<p class="status-message">
+    {% trans "Something went wrong while processing your payment." %}
+</p>
+<p class="status-message">
+    {% trans "We couldn't process your transaction completely at this time." %}
+</p>
+{% endblock %}
+
+{# Try Again starts a new cart for the same item, when the page knows it; otherwise the learner is sent to the courses. #}
+{% block status_actions %}
+{% if retry_url %}
+<a href="{{ retry_url }}" class="btn btn-outline">
+    {% trans "Try Again" %}
+</a>
+{% else %}
+<a href="{% url 'courses' %}" class="btn btn-outline">
+    {% trans "Browse Courses" %}
+</a>
+{% endif %}
 {% endblock %}

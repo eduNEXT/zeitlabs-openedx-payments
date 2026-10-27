@@ -5,10 +5,11 @@ import random
 import pytest
 from common.djangoapps.course_modes.models import CourseMode
 from django.contrib.auth import get_user_model
+from edx_django_utils.cache import RequestCache
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
 
 from test_utils.dummy_processor import DummyProcessor
-from zeitlabs_payments.models import CatalogueItem
+from zeitlabs_payments.models import BundleCourseItem, CatalogueItem
 from zeitlabs_payments.providers.registry import PROCESSORS
 
 User = get_user_model()
@@ -20,6 +21,16 @@ def register_dummy_processor():
     PROCESSORS['dummy'] = DummyProcessor
     yield
     PROCESSORS.pop('dummy', None)  # cleanup after test session
+
+
+@pytest.fixture(autouse=True)
+def empty_request_cache():
+    """
+    Start every test with an empty request cache, as every LMS request starts.
+
+    edx-toggles remembers a switch's value there, so a value read by one test would otherwise answer for the next.
+    """
+    RequestCache.clear_all_namespaces()
 
 
 USERS = {
@@ -89,6 +100,11 @@ COURSES = {
                     },
                     'catalogue_item': {
                         'enabled': True,
+                        'override': {
+                            # catalogue item carries the deployment currency even though the course mode
+                            # does not, which is allowed: the plugin reads the catalogue, never the mode
+                            'currency': 'SAR',
+                        }
                     }
                 }
             }
@@ -155,6 +171,35 @@ def base_data(django_db_setup, django_db_blocker):  # pylint: disable=unused-arg
                             currency=catalogue_currency,
                         )
 
+    def _create_program_bundles():
+        """Create program bundle CatalogueItems and link them to course CatalogueItems."""
+        course_item_1 = CatalogueItem.objects.get(sku='custom-sku-1')
+        course_item_2 = CatalogueItem.objects.get(sku='course1-org2-no-id-professional')
+
+        bundle = CatalogueItem.objects.create(
+            sku='BUNDLE-PRO-CERT',
+            type=CatalogueItem.ItemType.PROGRAM_BUNDLE,
+            title='Professional Certificate Bundle',
+            description='A bundle of two courses.',
+            item_ref_id='program-uuid-pro-cert',
+            price=80,
+            currency='SAR',
+        )
+
+        BundleCourseItem.objects.create(bundle=bundle, course_item=course_item_1)
+        BundleCourseItem.objects.create(bundle=bundle, course_item=course_item_2)
+
+        CatalogueItem.objects.create(
+            sku='BUNDLE-EMPTY',
+            type=CatalogueItem.ItemType.PROGRAM_BUNDLE,
+            title='Empty Bundle',
+            description='A bundle with no courses.',
+            item_ref_id='program-uuid-empty',
+            price=50,
+            currency='SAR',
+        )
+
     with django_db_blocker.unblock():
         _create_users()
         _create_courses_and_catalogue_items()
+        _create_program_bundles()

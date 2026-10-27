@@ -1,0 +1,90 @@
+{% extends "zeitlabs_payments/base.html" %}
+{% load i18n l10n %}
+{% load static %}
+{% load zeitlab_payment_tags %}
+
+{% block title %}{% trans "Payment History" %}{% endblock title %}
+
+{% block page_head %}
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+{% endblock %}
+
+{% block page_class %}order-history{% endblock %}
+
+{% block page_header %}
+    {# ── Hero Banner ── #}
+    <div class="oh-hero">
+        <h1>{% trans "Payment History" %}</h1>
+        <p>{% trans "Track and manage your academic investments" %}</p>
+    </div>
+{% endblock %}
+
+{% block page_content %}
+    {# ── Content Card ── #}
+    <div class="oh-card">
+        <h2 class="oh-card-title">{% trans "Your Invoices" %}</h2>
+
+        {% if records %}
+        {# One row per invoice: a table on wide screens, a stacked card below 768px, styled by CSS alone. #}
+        <table class="oh-table">
+            <thead>
+                <tr>
+                    <th scope="col">{% trans "Date" %}</th>
+                    <th scope="col">{% trans "Invoice" %}</th>
+                    <th scope="col">{% trans "Item" %}</th>
+                    <th scope="col">{% trans "Amount" %}</th>
+                    <th scope="col">{% trans "Status" %}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cart in records %} {% for inv in cart.invoices.all %}
+                <tr>
+                    <td class="oh-col-date">
+                        {% localize off %}{{ inv.created_at|date:"j M Y" }}{% endlocalize %}
+                    </td>
+                    <td class="oh-col-invoice">
+                        <a href="{{ inv.invoice_number|invoice_url }}">{{ inv.invoice_number }}</a>
+                    </td>
+                    <td class="oh-col-item">
+                        {% with item=cart.items.first %} {% if item and item.catalogue_item.type == 'program_bundle' %}
+                        <span class="oh-item-type">{% trans "Program" %}</span><br />
+                        {{ item.catalogue_item.title }} {% elif item and item.catalogue_item.type == 'paid_course' and item.catalogue_item.item_ref_id %}
+                        <a href="{% url 'about_course' item.catalogue_item.item_ref_id %}">
+                            {{ item.catalogue_item.title }}
+                        </a>
+                        {% elif item %} {{ item.catalogue_item.title }} {% endif %} {% endwith %}
+                    </td>
+                    <td class="oh-col-amount">{{ inv.total|format_price:inv.currency }} {{ inv.currency|currency_symbol }}</td>
+                    <td class="oh-col-status">
+                        <span class="oh-status" data-status="{{ inv.status }}">
+                            {{ inv.status|payment_status_display }}
+                        </span>
+                    </td>
+                </tr>
+                {% endfor %} {% endfor %}
+            </tbody>
+        </table>
+
+        {% else %} {# ── Empty state ── #}
+        <div class="oh-empty">
+            <div class="oh-empty-icon">
+                <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                >
+                    <circle cx="9" cy="21" r="1" />
+                    <circle cx="20" cy="21" r="1" />
+                    <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" />
+                </svg>
+            </div>
+            <p>{% trans "You have not made any payments yet." %}</p>
+        </div>
+
+        {% endif %}
+    </div>
+{% endblock %}

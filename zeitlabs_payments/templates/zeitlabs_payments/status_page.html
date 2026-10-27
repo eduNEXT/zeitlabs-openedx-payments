@@ -1,0 +1,24 @@
+{# Shared layout for learner payment status pages (success, decline, error, #}
+{# reconciliation/pending, invalid cart). Children supply per-status content. #}
+{% extends "zeitlabs_payments/base.html" %}
+{% load i18n %}
+
+{% block page_class %}status-page{% endblock %}
+
+{% block page_content %}
+<div class="status-card">
+    <div class="status-icon {% block status_icon_class %}{% endblock %}">
+        {% block status_icon %}{% endblock %}
+    </div>
+    <h2 class="status-title">{% block status_title %}{% endblock %}</h2>
+    {% block status_content %}{% endblock %}
+    {% if merchant_reference %}
+    <div class="status-reference">
+        {% trans "Reference:" %} {{ merchant_reference }}
+    </div>
+    {% endif %}
+    <div class="status-actions">
+        {% block status_actions %}{% endblock %}
+    </div>
+</div>
+{% endblock %}

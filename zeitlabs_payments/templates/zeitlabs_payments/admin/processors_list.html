@@ -1,12 +1,22 @@
 {% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+  {# Mirrors the trail Django builds for a model changelist, which this page has no opts to build from. #}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=app_label %}">{{ app_verbose_name }}</a>
+    &rsaquo; {{ title }}
+  </div>
+{% endblock %}
 
 {% block content %}
   <table id="result_list" class="admin-table" style="width: 100%;">
       <thead>
           <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Slug</th>
-              <th scope="col">Class</th>
+              <th scope="col">{% trans "Name" %}</th>
+              <th scope="col">{% trans "Slug" %}</th>
+              <th scope="col">{% trans "Class" %}</th>
           </tr>
       </thead>
       <tbody>
@@ -20,5 +30,3 @@
       </tbody>
   </table>
 {% endblock %}
-
-

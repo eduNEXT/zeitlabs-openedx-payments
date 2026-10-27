@@ -82,7 +82,7 @@ indent_size = 8
 [*.{yml,yaml,json}]
 indent_size = 2
 
-[*.js]
+[*.{js,html}]
 indent_size = 2
 
 [*.diff]

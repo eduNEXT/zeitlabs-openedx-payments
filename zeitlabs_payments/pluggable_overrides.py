@@ -5,7 +5,7 @@ from urllib.parse import urlencode, urljoin
 
 from django.urls import reverse
 
-from zeitlabs_payments.helpers import get_settings
+from zeitlabs_payments.settings_service import get_settings
 
 
 def override_ecommerce_checkout_page(prev_fn: Any, self: Any, *skus: Any, **kwargs: Any) -> Any:

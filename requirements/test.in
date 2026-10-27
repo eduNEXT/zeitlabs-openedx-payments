@@ -5,6 +5,7 @@
 # unit-test packages and dependencies
 code-annotations                # provides commands used by the pii_check make target.
 ddt                             # data-driven-tests for unittest
+edx-lint                        # linter with openedx-platform specifics
 deepdiff                        # for deep comparison of objects
 numpy                           # required by deepdiff
 pytest-cov                      # pytest extension for code coverage statistics
@@ -13,12 +14,8 @@ types-python-dateutil           # needed for mypy to understand python-dateutil
 
 
 # edx-platform related requirements
-edx-api-doc-tools
-edx-opaque-keys[django]
+babel
 djangorestframework
-django-config-models
-django-filter
-django-mysql
-django-simple-history
-jsonfield
-python-dateutil
+edx-django-utils
+edx-opaque-keys[django]
+edx-toggles

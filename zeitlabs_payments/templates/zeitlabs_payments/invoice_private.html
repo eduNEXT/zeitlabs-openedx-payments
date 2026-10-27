@@ -1,0 +1,18 @@
+{% extends "zeitlabs_payments/base.html" %}
+{% load i18n %}
+
+{% block page_class %}status-page{% endblock %}
+
+{% block page_content %}
+<div class="status-card">
+  <h2 class="status-title">{% trans "This invoice is private" as tmsg %}{{ tmsg | force_escape }}</h2>
+  <p class="status-message">
+    {% trans "Only the owner of this invoice can open this address." as tmsg %}
+    {{ tmsg | force_escape }}
+  </p>
+  <p class="status-message">
+    {% trans "If you scanned this code from a printed invoice in order to check it, ask the person named on it for a current copy." as tmsg %}
+    {{ tmsg | force_escape }}
+  </p>
+</div>
+{% endblock %}

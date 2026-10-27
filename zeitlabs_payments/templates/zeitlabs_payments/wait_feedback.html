@@ -1,73 +1,185 @@
 {% extends "main_django.html" %}
 {% load i18n %}
+{% load static %}
+{% get_current_language_bidi as LANGUAGE_BIDI %}
+
+{% block headextra %}
+{% include "zeitlabs_payments/styles.html" %}
+{% endblock %}
+
+{% block bodyclass %}zeitlabs-payment{% endblock %}
 
 {% block body %}
-  <style>
-    .centered-content {
-      text-align: center;
-      margin-top: 2em;
-    }
-  </style>
-  <div class="centered-content">
-    <h1 id="status-message">{% trans "Processing enrollment... please wait..." %}</h1>
-    <p>
-      {% trans "For your reference, the ID is:" %}
-      <strong>{{ ecommerce_transaction_id }}</strong>
-    </p>
-  </div>
 
-  <script type="text/javascript">
-    const errorUrl = "{{ ecommerce_error_url|safe }}";
-    const successUrl = "{{ ecommerce_success_url|safe }}";
-    const statusUrl = "{{ ecommerce_status_url|safe }}";
+<div class="status-page" dir="{% if LANGUAGE_BIDI %}rtl{% else %}ltr{% endif %}">
+    <div class="status-card processing-card">
+        <!-- Animated Processing Icon -->
+        <div class="processing-icon">
+            <div class="processing-circle-wrapper">
+                <svg class="processing-circle" viewBox="0 0 100 100">
+                    <circle class="circle-bg" cx="50" cy="50" r="45" />
+                    <circle class="circle-progress" cx="50" cy="50" r="45" />
+                </svg>
+            </div>
+            <div class="processing-icon-inner">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/>
+                    <line x1="1" y1="10" x2="23" y2="10"/>
+                </svg>
+            </div>
+        </div>
+
+        <h2 class="status-title" id="status-message">{% trans "Processing Your Payment..." %}</h2>
+
+        <p class="status-message">
+            {% trans "Please wait while we confirm your payment. This may take a few moments." %}
+        </p>
+
+        <!-- Progress Steps -->
+        <div class="processing-steps">
+            <div class="processing-step active" id="step-1">
+                <div class="step-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                        <polyline points="22 4 12 14.01 9 11.01"/>
+                    </svg>
+                </div>
+                <span>{% trans "Payment Submitted" %}</span>
+            </div>
+            <div class="processing-step" id="step-2">
+                <div class="step-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <polyline points="12 6 12 12 16 14"/>
+                    </svg>
+                </div>
+                <span>{% trans "Verifying Payment" %}</span>
+            </div>
+            <div class="processing-step" id="step-3">
+                <div class="step-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                        <polyline points="22 4 12 14.01 9 11.01"/>
+                    </svg>
+                </div>
+                <span>{% trans "Completing Order" %}</span>
+            </div>
+        </div>
+
+        <div class="status-reference">
+            <span class="reference-label">{% trans "Transaction ID:" %}</span>
+            <span class="reference-value">{{ gateway_order_id }}</span>
+        </div>
+
+        <p class="status-warning">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            {% trans "Please do not close this page or press the back button." %}
+        </p>
+    </div>
+</div>
+
+<script type="text/javascript">
+    const errorUrl = "{{ error_url|escapejs }}";
+    const declineUrl = "{{ decline_url|escapejs }}";
+    const cancelledUrl = "{{ cancelled_url|escapejs }}";
+    const reconciliationUrl = "{{ reconciliation_url|escapejs }}";
+    const unconfirmedUrl = "{{ unconfirmed_url|escapejs }}";
+    const statusUrl = "{{ status_url|escapejs }}";
+    const loginUrl = "{{ login_url|escapejs }}";
     const statusMessage = document.getElementById("status-message");
+    const step1 = document.getElementById("step-1");
+    const step2 = document.getElementById("step-2");
+    const step3 = document.getElementById("step-3");
     let attempts = 0;
 
-    function checkStatus() {
-      attempts++;
-      const params = new URLSearchParams({
-        transaction_id: "{{ ecommerce_transaction_id }}",
-        merchant_reference: "{{ merchant_reference }}"
-      });
-      fetch(`${statusUrl}?${params.toString()}`, {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded"
-        },
-        redirect: "follow"
-      })
-      .then(response => {
-        return response.json().then(data => ({
-          status: response.status,
-          data: data
-        }));
-      })
-      .then(({ status, data }) => {
-        if (status === 200) {
-          window.location.href = data.invoice_url;
-        } else if (status === 202) {
-          if (attempts < {{ ecommerce_max_attempts }}) {
-            setTimeout(checkStatus, {{ ecommerce_wait_time }});
-          } else {
-            window.location.href = errorUrl;
-          }
-        } else if (status === 400) {
-          if (data.error) {
-            statusMessage.textContent = data.error;
-          }
-          else {
-            window.location.href = errorUrl;
-          }
-        } else {
-          window.location.href = errorUrl;
+    function updateSteps(currentStep) {
+        if (currentStep >= 1) {
+            step1.classList.add('active');
+            step1.classList.remove('processing');
         }
-      })
-      .catch(error => {
-        console.error("Payment Check Status Error: ", error);
-        window.location.href = errorUrl;
-      });
+        if (currentStep >= 2) {
+            step2.classList.add('processing');
+        }
+        if (currentStep >= 3) {
+            step2.classList.remove('processing');
+            step2.classList.add('active');
+            step3.classList.add('processing');
+        }
+        if (currentStep >= 4) {
+            step3.classList.remove('processing');
+            step3.classList.add('active');
+        }
     }
 
-    window.onload = checkStatus;
+    function checkStatus() {
+        attempts++;
+
+        // Update visual feedback based on attempts
+        if (attempts === 1) {
+            updateSteps(2);
+        } else if (attempts > 2) {
+            updateSteps(3);
+        }
+
+        const params = new URLSearchParams({
+            gateway_order_id: "{{ gateway_order_id|escapejs }}"
+        });
+        fetch(`${statusUrl}?${params.toString()}`, {
+            method: "GET",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded"
+            },
+            redirect: "follow"
+        })
+        .then(response => response.json())
+        .then(data => {
+            // The page routes on the outcome the answer names, not on the HTTP status.
+            const outcome = data.outcome;
+            if (outcome === "paid") {
+                updateSteps(4);
+                statusMessage.textContent = "{% trans 'Payment Confirmed! Redirecting...' %}";
+                setTimeout(() => {
+                    window.location.href = data.invoice_url;
+                }, 1000);
+            } else if (outcome === "pending") {
+                if (attempts < {{ max_attempts }}) {
+                    setTimeout(checkStatus, {{ wait_time }});
+                } else {
+                    window.location.href = unconfirmedUrl;
+                }
+            } else if (outcome === "not_fulfilled" || outcome === "verification_failed") {
+                // The gateway took the money but the enrolment was not completed: never offer a retry here.
+                window.location.href = reconciliationUrl;
+            } else if (outcome === "login_required") {
+                window.location.href = loginUrl;
+            } else if (outcome === "declined") {
+                window.location.href = declineUrl;
+            } else if (outcome === "cancelled") {
+                window.location.href = cancelledUrl;
+            } else if (outcome === "missing_gateway_order_id") {
+                window.location.href = errorUrl;
+            } else {
+                // The gateway could not be asked, its answer could not be read, or the order could not be traced to a
+                // cart: the learner may have been charged, so they are told the payment is not confirmed yet and are
+                // never offered a retry.
+                window.location.href = unconfirmedUrl;
+            }
+        })
+        .catch(error => {
+            // No answer could be read at all, which is as unknown as an unreadable one.
+            console.error("Payment Check Status Error: ", error);
+            window.location.href = unconfirmedUrl;
+        });
+    }
+
+    if (document.readyState === 'complete') {
+        checkStatus();
+    } else {
+        window.addEventListener('load', checkStatus);
+    }
   </script>
 {% endblock %}

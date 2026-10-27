@@ -1,26 +1,37 @@
-
-
+{# Shared skeleton for all learner payment pages. Pages extend this and fill region blocks. #}
+{% extends "main_django.html" %}
 {% load i18n %}
-{% trans "Dummy text to generate a translation (.po) source file. It is safe to delete this line. It is also safe to delete (load i18n) above if there are no other (trans) tags in the file" %}
+{% load zeitlab_payment_tags %}
 
-{% comment %}
-As the developer of this package, don't place anything here if you can help it
-since this allows developers to have interoperability between your template
-structure and their own.
+{% block headextra %}
+{% include "zeitlabs_payments/styles.html" %}
+{% block page_head %}{% endblock %}
+{% endblock %}
 
-Example: Developer melding the 2SoD pattern to fit inside with another pattern::
+{% block bodyclass %}zeitlabs-payment{% endblock %}
 
-    {% extends "base.html" %}
-    {% load static %}
-
-    <!-- Their site uses old school block layout -->
-    {% block extra_js %}
-
-        <!-- Your package using 2SoD block layout -->
-        {% block javascript %}
-            <script src="{% static 'js/ninja.js' %}" type="text/javascript"></script>
-        {% endblock javascript %}
-
-    {% endblock extra_js %}
-{% endcomment %}
-
+{% block body %}
+{# Assignments must live inside the block: Django drops everything a template declares after its own #}
+{# {% extends %}, so a top-level {% get_... as %} here would never run. #}
+{% get_current_language_bidi as LANGUAGE_BIDI %}
+{% get_zeitlabs_settings as zl_settings %}
+<div class="{% block page_class %}{% endblock %}" dir="{% if LANGUAGE_BIDI %}rtl{% else %}ltr{% endif %}">
+    {% block page_header %}{% endblock %}
+    {% block page_content %}{% endblock %}
+    {% block page_support %}
+        {% if zl_settings.support_url or zl_settings.support_email %}
+        <div class="help-section">
+            <h4>{% trans "Have questions?" %}</h4>
+            {% if zl_settings.support_url %}
+            <a href="{{ zl_settings.support_url }}">{% trans "Contact Support" %}</a>
+            {% endif %}
+            {% if zl_settings.support_email %}
+            <a href="mailto:{{ zl_settings.support_email }}">{{ zl_settings.support_email }}</a>
+            {% endif %}
+        </div>
+        {% endif %}
+    {% endblock %}
+    {% block page_footer %}{% endblock %}
+</div>
+{% block page_scripts %}{% endblock %}
+{% endblock %}

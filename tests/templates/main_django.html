@@ -1,2 +1,10 @@
-<!-- Dummy template for testing -->
-<html><body>Dummy template for test</body></html>
+{# Minimal Open edX-style shell so learner templates can render their blocks in tests. #}
+<html class="{% block bodyclass %}{% endblock %}">
+<head>
+  <title>{% block title %}{% endblock %}</title>
+  {% block headextra %}{% endblock %}
+</head>
+<body>
+{% block body %}{% endblock %}
+</body>
+</html>

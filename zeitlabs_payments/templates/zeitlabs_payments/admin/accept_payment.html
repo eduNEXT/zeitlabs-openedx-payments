@@ -1,0 +1,49 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; <a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+    &rsaquo; {{ title }}
+  </div>
+{% endblock %}
+
+{% block content %}
+  <p>
+    {% translate "Accept the payment only once the gateway's dashboard shows it taken, for the cart total. The cart moves to paid, and its invoice and enrollment follow." %}
+  </p>
+
+  <h2>{% blocktranslate with cart_id=cart.id username=cart.user.username %}Cart {{ cart_id }} of {{ username }}{% endblocktranslate %}</h2>
+  <p>{% blocktranslate with gateway=cart.gateway total=cart.total %}Handed to {{ gateway }}. Total: {{ total }}.{% endblocktranslate %}</p>
+
+  {% if payments %}
+    <ul class="accept-payments">
+      {% for payment in payments %}
+        <li>{% blocktranslate with reference=payment.gateway_transaction_id amount=payment.amount currency=payment.currency status=payment.status reason=payment.reason %}Payment {{ reference }}: {{ amount }} {{ currency }}, {{ status }}. {{ reason }}{% endblocktranslate %}</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>{% translate "No payment was recorded for this cart: the gateway's answer could not be read or recorded." %}</p>
+  {% endif %}
+
+  {% if refusals %}
+    <h2>{% translate "Why the gateway's answers were not settled" %}</h2>
+    <ul class="accept-refusals">
+      {% for entry in refusals %}
+        <li>{{ entry.details }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ cart.pk }}">
+    <input type="hidden" name="action" value="accept_payment">
+    <input type="hidden" name="confirm" value="yes">
+    <input type="submit" value="{% translate 'Accept the payment' %}">
+    <a href="{% url opts|admin_urlname:'changelist' %}" class="button cancel-link">{% translate 'Cancel' %}</a>
+  </form>
+{% endblock %}

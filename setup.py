@@ -129,12 +129,12 @@ README = open(os.path.join(os.path.dirname(__file__), 'README.rst'), encoding="u
 CHANGELOG = open(os.path.join(os.path.dirname(__file__), 'CHANGELOG.md'), encoding="utf8").read()
 
 setup(
-    name='zeitlabs-payments',
+    name='openedx-zeitlabs-payments',
     version=VERSION,
     description="""Simple Ecommerce for Open edX payments""",
     long_description=README + '\n\n' + CHANGELOG,
     author='Zeitlabs Project',
-    url='https://github.com/zeit-labs/zeitlabs-payments',
+    url='https://github.com/zeit-labs/openedx-zeitlabs-payments',
     packages=find_packages(
         include=['zeitlabs_payments', 'zeitlabs_payments.*'],
         exclude=["*tests"],
@@ -143,7 +143,7 @@ setup(
     include_package_data=True,
     install_requires=load_requirements('requirements/base.in'),
     python_requires=">=3.11",
-    license="Apache Software License 2.0",
+    license="AGPL 3.0",
     zip_safe=False,
     keywords='Python edx',
     classifiers=[
@@ -152,7 +152,7 @@ setup(
         'Framework :: Django :: 4.2',
         'Framework :: Django :: 5.2',
         'Intended Audience :: Developers',
-        'License :: OSI Approved :: Apache Software License',
+        'License :: OSI Approved :: GNU Affero General Public License v3',
         'Natural Language :: English',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.11',
